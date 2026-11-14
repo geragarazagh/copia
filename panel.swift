@@ -200,14 +200,14 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     private var foldCache: [Int64: ContiguousArray<UInt8>] = [:]
     private func folded(_ e: Entry) -> ContiguousArray<UInt8> {
         if let f = foldCache[e.id] { return f }
-        let f = fold(e.title + "\n" + e.text)
+        let f = fold(e.searchable(e.title))
         foldCache[e.id] = f
         return f
     }
 
     /// Folds every entry not folded yet, off the main thread, so the first key typed after launch is as fast as the rest.
     func warmSearch(wait: Bool = false) {
-        let todo = all.filter { foldCache[$0.id] == nil }.map { ($0.id, $0.title + "\n" + $0.text) }
+        let todo = all.filter { foldCache[$0.id] == nil }.map { ($0.id, $0.searchable($0.title)) }
         guard !todo.isEmpty else { return }
         let g = DispatchGroup()
         g.enter()

@@ -433,8 +433,7 @@ func metaFacts(_ e: Entry, short: Bool = false) -> String {
     switch e.kind {
     case .text: return counted(e.text.count, "character|characters")
     case .link:
-        let u = e.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return URL(string: u)?.host ?? u
+        return URL(string: e.address)?.host ?? e.address
     case .color: return rgb(e.title).map { "RGB \($0.0) · \($0.1) · \($0.2)" } ?? ""
     case .image:   // an icon has room for one fact: the pixels, as Finder's «Show item info»
         if short { return e.width > 0 ? "\(e.width) × \(e.height)" : sizeText(e.bytes) }

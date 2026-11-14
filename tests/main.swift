@@ -1,6 +1,7 @@
 // Off-screen tests of Clip, built by ./test from the app's own sources (all but main.swift).
 //   clip-tests unit                 selection, facts, store, delete/undo, search speed, the paste folder
 //   clip-tests capture              the monitor on a private named pasteboard
+//   clip-tests links                link titles and pictures from real Safari copies (tests/links), network denied
 //   clip-tests copy                 the one-write copy on a private named pasteboard: items and types, order, files
 //   clip-tests general              capture and copy on the GENERAL pasteboard, his content saved before and put back
 //                                   after (run outside Claude's command sandbox: inside it, file URLs after the first
@@ -704,9 +705,11 @@ func render(app: String, theme: String, out: String, mode: String) {
     strings = Bundle(path: app)!
     let res = "/Users/harazha/.local/share/clipboard/mock/res/"
     let dir = tmpDir("render")
-    let specs = mockSpecs()
-    let few = mode == "few", empty = mode == "empty"
-    let (st, ids) = seeded(dir, empty ? [] : few ? Array(specs.prefix(15).suffix(3)) : specs)
+    let links = mode == "links"   // the real Safari copies of tests/links, newest on top
+    let lpb = NSPasteboard(name: .init("com.geragaraza.clip.render.\(getpid())"))
+    let specs = links ? linkSpecs(lpb) : mockSpecs()
+    let few = mode == "few" || links, empty = mode == "empty"
+    let (st, ids) = seeded(dir, empty ? [] : links ? specs : few ? Array(specs.prefix(15).suffix(3)) : specs)
     let pc = PanelController(store: st, monitor: nil, onScreen: false)
     pc.forceFocus = true
     // Picked in the mockup's order: the dictated message, page A, page C, the screenshot.
@@ -799,6 +802,115 @@ func render(app: String, theme: String, out: String, mode: String) {
     exit(0)
 }
 
+
+// MARK: links (run with the network denied: ./test wraps it in sandbox-exec)
+
+/// A pasteboard as an app left it, saved by proto/mc save (tests/links/*.plist: real Safari copies, 2026-11-14).
+func fixture(_ name: String) -> [[String: Data]] {
+    let u = URL(fileURLWithPath: FileManager.default.currentDirectoryPath + "/tests/links/\(name).plist")
+    return try! PropertyListSerialization.propertyList(from: Data(contentsOf: u), format: nil) as! [[String: Data]]
+}
+/// Written to a private pasteboard and read back through the monitor's own read, as a copy would be.
+func readBack(_ items: [[String: Data]], _ pb: NSPasteboard) -> Snapshot {
+    pb.clearContents()
+    pb.writeObjects(items.map { d in item(d.sorted { $0.key < $1.key }.map { ($0.key, $0.value) }) })
+    guard case .copy(var s) = Monitor.read(pb, count: pb.changeCount) else { fatalError("no copy read") }
+    s.source = "com.apple.Safari"
+    return s
+}
+func linkSpecs(_ pb: NSPasteboard) -> [(Snapshot, Date)] {
+    let now = Date()
+    let u8 = { (t: String) in Data(t.utf8) }
+    return [
+        (readBack(fixture("safari-paragraph"), pb), now.addingTimeInterval(-50)),
+        (readBack([[str: u8("https://github.com"), "public.url": u8("https://github.com/"), "public.url-name": u8("https://github.com")]], pb),
+         now.addingTimeInterval(-40)),   // Notes: its url-name is the address itself
+        (readBack(fixture("safari-selected-link"), pb), now.addingTimeInterval(-30)),
+        (readBack(fixture("safari-copy-link"), pb), now.addingTimeInterval(-20)),
+        (readBack(fixture("safari-address"), pb), now.addingTimeInterval(-10)),
+    ]
+}
+
+func linkTests() {
+    let pb = NSPasteboard(name: .init("com.geragaraza.clip.test.\(getpid())"))
+    defer { pb.releaseGlobally() }
+    let dir = tmpDir("links")
+    let specs = linkSpecs(pb)
+    let (st, ids) = seeded(dir, specs)
+    let byId = Dictionary(uniqueKeysWithValues: st.entries().map { ($0.id, $0) })
+    let para = byId[ids[0]]!, notes = byId[ids[1]]!, sel = byId[ids[2]]!, copyLink = byId[ids[3]]!, bar = byId[ids[4]]!
+
+    // Safari's address bar: the title and both pictures from the archived LPLinkMetadata, no network.
+    check(bar.kind == .link, "address bar: a link (\(bar.kind))")
+    check(bar.title == "GitHub · Change is constant. GitHub keeps you ahead. · GitHub", "address bar: the page's title (\(bar.title))")
+    check(bar.url == nil && bar.address == "https://github.com", "address bar: the address is the text (\(bar.address))")
+    check(metaText(bar).hasSuffix(" · https://github.com"), "address bar: the address under the title (\(metaText(bar)))")
+    let icon = bar.thumb.flatMap { NSImage(contentsOf: dir.appendingPathComponent($0)) }
+    check(icon.map { Int($0.representations[0].pixelsWide) } == 120 && bar.thumb?.hasSuffix(".png") == true,
+          "address bar: the site's 120 px PNG icon kept (\(bar.thumb ?? "none"))")
+    let pic = bar.picture.flatMap { NSImage(contentsOf: dir.appendingPathComponent($0)) }
+    check(pic.map { Int($0.representations[0].pixelsWide) } == 1024 && bar.picture?.hasSuffix(".jpeg") == true,
+          "address bar: the page's 1024 px picture kept as JPEG (\(bar.picture ?? "none"))")
+    check(st.reps(bar.id).first?.contains { $0.type == "com.apple.linkpresentation.metadata" } == true,
+          "address bar: the metadata kept for pasting (Notes and Messages make their link card from it)")
+
+    // Safari's Copy Link: public.url-name is the link's text.
+    check(copyLink.kind == .link && copyLink.title == "Страница macOS" && copyLink.address == "https://www.apple.com/macos/",
+          "Copy Link: titled by url-name (\(copyLink.title), \(copyLink.address))")
+    check(copyLink.thumb == nil && copyLink.picture == nil, "Copy Link: no pictures carried, none made up")
+
+    // A link selected on a page: the HTML is one <a>; the text stays what pastes, the address its own field.
+    check(sel.kind == .link && sel.title == "GitHub" && sel.url == "https://github.com/" && sel.text == "GitHub",
+          "selected link: title GitHub, address github.com/ (\(sel.kind), \(sel.title), \(sel.url ?? "nil"))")
+    check(metaText(sel).hasSuffix(" · https://github.com/"), "selected link: the address under the title (\(metaText(sel)))")
+    check(sel.searchable(sel.title).contains("github.com/"), "selected link: its address is searchable")
+
+    // Not links, or links with no title.
+    check(para.kind == .text, "a paragraph with a link inside stays text (\(para.kind))")
+    check(notes.kind == .link && notes.title == "https://github.com" && !metaText(notes).contains(" · https"),
+          "url-name equal to the address is no title (\(notes.title); \(metaText(notes)))")
+
+    // Telegram's hidden link: plain «text (address)», HTML one <a> with an entity in its address.
+    let tg = linkInfo([Rep(type: str, data: Data("Сайт (https://example.com/a?b=1&c=2)".utf8)),
+                       Rep(type: html, data: Data("<meta charset=\"utf-8\"><a href=\"https://example.com/a?b=1&amp;c=2\">Сайт</a>".utf8))],
+                      plain: "Сайт (https://example.com/a?b=1&c=2)")
+    check(tg == LinkInfo(url: "https://example.com/a?b=1&c=2", title: "Сайт"), "Telegram's hidden link (\(String(describing: tg)))")
+    func htmlLink(_ h: String, _ plain: String) -> LinkInfo? {
+        linkInfo([Rep(type: str, data: Data(plain.utf8)), Rep(type: html, data: Data(h.utf8))], plain: plain)
+    }
+    check(htmlLink("<a href='https://a.com'>A</a> and <a href='https://b.com'>B</a>", "A and B") == nil, "two links: text")
+    check(htmlLink("<a href=\"javascript:alert(1)\">A</a>", "A") == nil, "a script link: text")
+    check(htmlLink("<b>Read:</b> <a href=\"https://a.com\">A</a>", "Read: A") == nil, "words beside the link: text")
+    check(htmlLink("<a href=\"https://a.com\">A</a>", "B") == nil, "plain text not the link's: text")
+    check(htmlLink("<html><head><title>T</title><style>a{}</style></head><body><!-- c --><a href=https://a.com/x>A&nbsp;b</a></body></html>", "A b")
+          == LinkInfo(url: "https://a.com/x", title: "A b"), "Chromium-style page: head, comment, unquoted href, &nbsp;")
+    check(htmlLink("<a href=\"https://a.com/\">a.com</a>", "a.com") == LinkInfo(url: "https://a.com/", title: nil),
+          "a link whose text is its address: no title")
+    check(sameAddress("https://www.github.com/", "github.com") && !sameAddress("github.com/a", "github.com"), "sameAddress")
+
+    // Two pictures per link, so the purge must keep them while the entry lives and drop them after.
+    let files = [bar.thumb!, bar.picture!].map { dir.appendingPathComponent($0) }
+    let old = Date().addingTimeInterval(-3600)
+    for f in files { try? FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: f.path) }
+    st.purge()
+    check(files.allSatisfy { FileManager.default.fileExists(atPath: $0.path) }, "purge keeps a live link's pictures")
+    st.erase([bar.id])
+    st.purge()
+    check(files.allSatisfy { !FileManager.default.fileExists(atPath: $0.path) }, "purge removes an erased link's pictures")
+
+    // A store from before (version 1, no url or picture columns) opens and takes link entries.
+    let odir = tmpDir("links-v1")
+    let o1 = try! Store(dir: odir); _ = o1
+    let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+    p.arguments = [odir.appendingPathComponent("clip.sqlite").path,
+                   "ALTER TABLE entries DROP COLUMN url; ALTER TABLE entries DROP COLUMN picture; PRAGMA user_version = 1;"]
+    try! p.run(); p.waitUntilExit()
+    let o2 = try! Store(dir: odir)
+    let (e, it) = prepare(readBack(fixture("safari-selected-link"), pb), dir: odir)!
+    let oid = o2.add(e, it)
+    check(o2.entries().first { $0.id == oid }?.url == "https://github.com/", "a version 1 store gains the link columns")
+}
+
 // MARK: main
 
 _ = NSApplication.shared
@@ -812,6 +924,7 @@ case "copy":
     let pb = NSPasteboard(name: .init("com.geragaraza.clip.test.\(getpid())"))
     copyTests(pb); pb.releaseGlobally(); finish("copy")
 case "general": general(); finish("general")
+case "links": linkTests(); finish("links")
 case "readtiff" where argv.count == 3:   // copy's helper: another process asking for the TIFF
     let d = NSPasteboard(name: .init(argv[2])).pasteboardItems?.first?.data(forType: .tiff)
     print(d.flatMap { NSBitmapImageRep(data: $0) }?.pixelsWide ?? 0); exit(0)
@@ -819,5 +932,5 @@ case "seed" where argv.count == 3:   // the mockup's content into a data folder,
     _ = seeded(URL(fileURLWithPath: argv[2]), mockSpecs()); exit(0)
 case "render" where argv.count >= 5: render(app: argv[2], theme: argv[3], out: argv[4], mode: argv.count > 5 ? argv[5] : "")
 default:
-    print("usage: clip-tests unit | capture | copy | general | render APP THEME OUT [motion]"); exit(2)
+    print("usage: clip-tests unit | capture | copy | general | links | render APP THEME OUT [motion]"); exit(2)
 }

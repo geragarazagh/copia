@@ -45,7 +45,7 @@ final class Store {
               id INTEGER PRIMARY KEY, copied REAL NOT NULL, app TEXT, kind TEXT NOT NULL, title TEXT NOT NULL,
               text TEXT NOT NULL, bytes INTEGER NOT NULL, count INTEGER NOT NULL, width INTEGER NOT NULL DEFAULT 0,
               height INTEGER NOT NULL DEFAULT 0, thumb TEXT, digest TEXT NOT NULL, deleted REAL,
-              concealed INTEGER NOT NULL DEFAULT 0);
+              concealed INTEGER NOT NULL DEFAULT 0, url TEXT, picture TEXT);
             CREATE INDEX IF NOT EXISTS entries_digest ON entries(digest);
             CREATE INDEX IF NOT EXISTS entries_copied ON entries(copied);
             CREATE TABLE IF NOT EXISTS reps(
@@ -55,8 +55,13 @@ final class Store {
             CREATE TABLE IF NOT EXISTS originals(
               entry INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE, item INTEGER NOT NULL,
               type TEXT NOT NULL, data BLOB, file TEXT, PRIMARY KEY(entry, item, type)) WITHOUT ROWID;
-            PRAGMA user_version = 1;
             """)
+        // Version 2 (2026-11-14): a link's own address and the page picture it carried (link.swift).
+        if query("PRAGMA user_version", [], { int($0, 0) }).first ?? 0 < 2 {
+            let cols = Set(query("PRAGMA table_info(entries)", [], { text($0, 1) ?? "" }))
+            for c in ["url", "picture"] where !cols.contains(c) { try exec("ALTER TABLE entries ADD COLUMN \(c) TEXT") }
+            try exec("PRAGMA user_version = 2")
+        }
     }
 
     deinit { sqlite3_close_v2(db) }
@@ -74,10 +79,10 @@ final class Store {
         }
         run("BEGIN")
         run("""
-            INSERT INTO entries(copied, app, kind, title, text, bytes, count, width, height, thumb, digest, concealed)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+            INSERT INTO entries(copied, app, kind, title, text, bytes, count, width, height, thumb, digest, concealed, url, picture)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, [e.copied.timeIntervalSince1970, e.app, e.kind.rawValue, e.title, e.text, e.bytes, e.count, e.width,
-                  e.height, e.thumb, e.digest, e.concealed ? 1 : 0])
+                  e.height, e.thumb, e.digest, e.concealed ? 1 : 0, e.url, e.picture])
         let id = sqlite3_last_insert_rowid(db)
         for (i, reps) in items.enumerated() {
             for r in reps { run("INSERT OR REPLACE INTO reps(entry, item, type, data, file) VALUES (?,?,?,?,?)", [id, i, r.type, r.data, r.file]) }
@@ -89,7 +94,7 @@ final class Store {
     /// Newest first.
     func entries(deleted: Bool = false) -> [Entry] {
         query("""
-            SELECT id, copied, app, kind, title, text, bytes, count, width, height, thumb, digest, deleted, concealed
+            SELECT id, copied, app, kind, title, text, bytes, count, width, height, thumb, digest, deleted, concealed, url, picture
             FROM entries WHERE deleted IS \(deleted ? "NOT NULL" : "NULL") ORDER BY copied DESC, id DESC
             """, []) { s in
             Entry(id: int(s, 0), copied: Date(timeIntervalSince1970: sqlite3_column_double(s, 1)), app: text(s, 2),
@@ -97,7 +102,7 @@ final class Store {
                   bytes: Int(int(s, 6)), count: Int(int(s, 7)), width: Int(int(s, 8)), height: Int(int(s, 9)),
                   thumb: text(s, 10), digest: text(s, 11) ?? "",
                   deleted: sqlite3_column_type(s, 12) == SQLITE_NULL ? nil : Date(timeIntervalSince1970: sqlite3_column_double(s, 12)),
-                  concealed: int(s, 13) != 0)
+                  concealed: int(s, 13) != 0, url: text(s, 14), picture: text(s, 15))
         }
     }
 
@@ -138,7 +143,11 @@ final class Store {
         let t = now.timeIntervalSince1970
         run("DELETE FROM entries WHERE deleted IS NOT NULL AND deleted < ?", [t - recentlyDeletedDays * 86400])
         if let s = keep.seconds { run("DELETE FROM entries WHERE copied < ?", [t - s]) }
-        let used = Set(query("SELECT file FROM reps WHERE file IS NOT NULL UNION SELECT file FROM originals WHERE file IS NOT NULL", [], { text($0, 0) ?? "" }))
+        // A link's icon (thumb) and page picture are files no representation names: the entry itself does.
+        let used = Set(query("""
+            SELECT file FROM reps WHERE file IS NOT NULL UNION SELECT file FROM originals WHERE file IS NOT NULL
+            UNION SELECT thumb FROM entries WHERE thumb IS NOT NULL UNION SELECT picture FROM entries WHERE picture IS NOT NULL
+            """, [], { text($0, 0) ?? "" }))
         let fm = FileManager.default
         for sub in ["images", "blobs"] {
             for f in (try? fm.contentsOfDirectory(atPath: dir.appendingPathComponent(sub).path)) ?? [] where !used.contains(sub + "/" + f) {
@@ -195,8 +204,9 @@ final class Store {
     private func refresh(_ id: Int64, from items: [[Rep]], app: String?) {
         let loaded = items.map { $0.map { Rep(type: $0.type, data: data($0)) } }
         guard let (e, _) = prepare(Snapshot(items: loaded, source: app), dir: dir) else { return }
-        run("UPDATE entries SET kind = ?, title = ?, text = ?, bytes = ?, digest = ? WHERE id = ?",
-            [e.kind.rawValue, e.title, e.text, e.bytes, e.digest, id])
+        run("UPDATE entries SET kind = ?, title = ?, text = ?, bytes = ?, digest = ?, url = ?, picture = ? WHERE id = ?",
+            [e.kind.rawValue, e.title, e.text, e.bytes, e.digest, e.url, e.picture, id])
+        if e.kind == .link { run("UPDATE entries SET thumb = ? WHERE id = ?", [e.thumb, id]) }
     }
 
     // MARK: settings

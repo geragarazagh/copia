@@ -86,8 +86,7 @@ func metaText(_ e: Entry) -> String {
     switch e.kind {
     case .text: p.append(counted(e.text.count, "character|characters"))
     case .link:   // the address under the page's title; a bare address is already the title
-        let u = e.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if e.title != u { p.append(u) }
+        if e.title != e.address { p.append(e.address) }
     case .color: if let (r, g, b) = rgb(e.title) { p.append("RGB \(r) · \(g) · \(b)") }
     case .image:
         if e.width > 0 { p.append("\(e.width) × \(e.height)") }   // several: the title already says how many
@@ -183,7 +182,14 @@ final class Thumbs {
             return icon(.image, s)
         case .text where s >= 48: return page(e.text, side: s)
         case .text: return icon(.plainText, s)
-        case .link: return icon(UTType("com.apple.web-internet-location") ?? .url, s)
+        case .link:
+            // What the copying app carried (link.swift): the site's icon in a row, the page's picture where there is
+            // room for it (the big window's icons and gallery); neither carried: the system's link icon.
+            let files = s >= 48 ? [e.picture, e.thumb] : [e.thumb, e.picture]
+            for f in files.compactMap({ $0 }) {
+                if let cg = picture(store.dir.appendingPathComponent(f), px: px) { return rounded(NSImage(cgImage: cg, size: .zero), side: s) }
+            }
+            return icon(UTType("com.apple.web-internet-location") ?? .url, s)
         case .color:
             let (r, g, b) = rgb(e.title) ?? (128, 128, 128)
             let c = NSColor(srgbRed: CGFloat(r) / 255, green: CGFloat(g) / 255, blue: CGFloat(b) / 255, alpha: 1)

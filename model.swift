@@ -38,6 +38,13 @@ struct Entry: Equatable {
     var digest: String
     var deleted: Date?
     var concealed = false
+    var url: String?          // a link's address when it is not the text itself (a link selected on a page)
+    var picture: String?      // images/<sha>.<ext>: the page's picture a link carried (Safari's og:image)
+
+    /// A link's address: its own field, or the text that is the address.
+    var address: String { url ?? text.trimmingCharacters(in: .whitespacesAndNewlines) }
+    /// What search looks through: the title, the text and, for a link selected on a page, its address.
+    func searchable(_ shown: String) -> String { shown + "\n" + text + (url.map { "\n" + $0 } ?? "") }
 }
 
 // MARK: pasteboard type names
@@ -146,12 +153,13 @@ func prepare(_ s: Snapshot, dir: URL, at date: Date = Date()) -> (Entry, [[Rep]]
         let one = t.trimmingCharacters(in: .whitespacesAndNewlines)
         if isColor(one) {
             e.kind = .color; e.title = one.uppercased()
-        } else if !one.contains(where: \.isWhitespace), let u = URL(string: one), let sc = u.scheme?.lowercased(),
-                  ["http", "https"].contains(sc), u.host != nil {
+        } else if s.items.count == 1, let link = linkInfo(s.items[0], plain: t) {
+            // The title and pictures only as the copying app gave them (link.swift); none given: the address.
             e.kind = .link
-            let name = s.items.first?.first { $0.type == NSPasteboard.PasteboardType.urlName.rawValue }?.data
-                .flatMap { String(data: $0, encoding: .utf8) }?.trimmingCharacters(in: .whitespacesAndNewlines)
-            e.title = name.flatMap { $0.isEmpty ? nil : $0 } ?? one
+            e.title = link.title ?? link.url
+            if link.url != one { e.url = link.url }
+            e.thumb = link.icon.flatMap { keepPicture($0, dir: dir) }
+            e.picture = link.image.flatMap { keepPicture($0, dir: dir) }
         } else {
             e.kind = .text
             e.title = headline(t)

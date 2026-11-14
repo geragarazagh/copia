@@ -245,7 +245,7 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
         var list = all.filter { inPane($0, pane) }
         if !q.isEmpty {
             list = list.filter { e in
-                let f = foldCache[e.id] ?? { let f = fold(shownTitle(e) + "\n" + e.text); foldCache[e.id] = f; return f }()
+                let f = foldCache[e.id] ?? { let f = fold(e.searchable(shownTitle(e))); foldCache[e.id] = f; return f }()
                 return f.withUnsafeBytes { h in q.withUnsafeBytes { nd in memmem(h.baseAddress, h.count, nd.baseAddress, nd.count) != nil } }
             }
         }
