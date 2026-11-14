@@ -855,6 +855,30 @@ func render(app: String, theme: String, out: String, mode: String) {
     bg.imageScaling = .scaleAxesIndependently
     root.addSubview(bg)
     pc.view.frame.origin = NSPoint(x: (SW - panelSize.width) / 2, y: ((SH - pc.view.frame.height) / 2).rounded())
+    // COPIA_RENDER_PLACE: the panel where the app puts it on a 16-inch screen (menu bar 32 pt, Dock hidden), in this
+    // flipped picture: 38 pt from the top, 6 pt from the sides and the bottom (place.swift).
+    func origin(_ p: Place, _ h: CGFloat) -> NSPoint {
+        let x: CGFloat = p.column == .left ? 6 : p.column == .right ? SW - 6 - panelSize.width : (SW - panelSize.width) / 2
+        let y: CGFloat = p.row == .top ? 38 : p.row == .bottom ? SH - 6 - h : (32 + (SH - 32) / 2 - h / 2).rounded()
+        return NSPoint(x: x, y: y)
+    }
+    let place = ProcessInfo.processInfo.environment["COPIA_RENDER_PLACE"].flatMap(Place.init)
+    if let place { pc.view.frame.origin = origin(place, pc.view.frame.height) }
+    if mode == "places", let place {
+        // The risky variant: while the panel is dragged, the other six places show as outlines, as macOS 15's window
+        // tiling shows where a window will go.
+        for p in Place.allCases where p != place {
+            // Each place as the search field would land there: the field's own capsule, where the panel's top goes.
+            let o = origin(p, fieldH)
+            let g = NSView(frame: NSRect(x: o.x, y: o.y, width: panelSize.width, height: fieldH))
+            g.wantsLayer = true
+            g.layer?.cornerRadius = fieldH / 2; g.layer?.cornerCurve = .continuous
+            g.layer?.borderWidth = 2
+            g.layer?.borderColor = NSColor.white.withAlphaComponent(0.8).cgColor
+            g.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.18).cgColor
+            root.addSubview(g)
+        }
+    }
     root.addSubview(pc.view)
     win.contentView = root
     win.setFrame(NSRect(x: 0, y: 0, width: SW, height: SH), display: true)

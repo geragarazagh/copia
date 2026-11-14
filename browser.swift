@@ -151,7 +151,8 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
         let s = store.setting("browser.sort").flatMap(SortKey.init) ?? .date
         sort = s
         ascending = store.setting("browser.ascending").map { $0 == "1" } ?? s.ascendingFirst
-        iconSize = store.setting("browser.iconSize").flatMap(Double.init).map { CGFloat($0) } ?? 64
+        iconSize = store.setting("browser.iconSize").flatMap(Double.init).map { CGFloat($0) }
+            ?? ProcessInfo.processInfo.environment["COPIA_ICON"].flatMap(Double.init).map { CGFloat($0) } ?? 64   // COPIA_ICON: variants
         columns = store.setting("browser.columns").map { $0.split(separator: ",").compactMap { SortKey(rawValue: String($0)) } }
             ?? [.date, .size, .kind, .app]
         super.init()
