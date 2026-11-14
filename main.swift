@@ -5,6 +5,7 @@
 //
 // Opened by a person it shows the big window; started at login (--login, from the agent in the bundle) or with
 // --background it shows nothing and waits for ⌥⌘C.
+//   --open-at-login on|off|status   the Settings switch from Terminal (an install script): prints the state, quits
 //   --data DIR       keep the history in DIR instead (tests and trials)
 //   --quit-after S   quit by itself after S seconds (a trial on a real screen must end without a person)
 // Trial flags (Claude's checks on a virtual display of its own, never on the person's screen):
@@ -13,6 +14,7 @@
 //   --trial          no hot key, no clipboard watching, no login item change: nothing that touches the person's Mac
 //   --appearance light|dark
 import AppKit
+import ServiceManagement
 
 let args = CommandLine.arguments
 func arg(_ name: String) -> String? { args.firstIndex(of: name).flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil } }
@@ -29,6 +31,14 @@ if args.contains("--login") {
         p.waitUntilExit()
     }
     exit(0)
+}
+
+if let v = arg("--open-at-login") {   // on, off, or anything else to print the state
+    do {
+        if v == "on" { try loginItem.register() } else if v == "off" { try loginItem.unregister() }
+    } catch { FileHandle.standardError.write(Data("Open at Login: \(error)\n".utf8)) }
+    print(["notRegistered", "enabled", "requiresApproval", "notFound"][min(loginItem.status.rawValue, 3)])
+    exit(v == "on" && loginItem.status != .enabled || v == "off" && loginItem.status == .enabled ? 1 : 0)
 }
 
 // One copy at a time: two would record every copy twice.
