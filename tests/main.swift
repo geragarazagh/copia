@@ -283,6 +283,70 @@ func unit() {
         try? FileManager.default.removeItem(at: gdir)
     }
 
+    // Editing a text (the Space preview): saved in place, the original kept once, reverted on demand.
+    let edir = tmpDir("edit")
+    let (es, eids) = seeded(edir, [(textSnap("first copy"), now), (Snapshot(items: [[Rep(type: rtf, data: Data("{\\rtf1 {\\b bold} text}".utf8)),
+                                   Rep(type: str, data: Data("bold text".utf8))]], source: "com.apple.TextEdit"), now.addingTimeInterval(1))])
+    es.edit(eids[0], plain: "edited copy", rtf: nil)
+    var ee = es.entries().first { $0.id == eids[0] }!
+    check(ee.title == "edited copy" && es.hasOriginal(eids[0]) && es.reps(eids[0]).first?.map(\.type) == [str], "edit: new text, original kept \(ee.title)")
+    es.edit(eids[0], plain: "edited twice", rtf: nil)
+    es.revert(eids[0])
+    ee = es.entries().first { $0.id == eids[0] }!
+    check(ee.title == "first copy" && !es.hasOriginal(eids[0]) && es.entries().map(\.id) == eids.reversed(), "revert: the first original back, the list order kept")
+
+    // The preview controller, off-screen: Space's rule, live facts, bold, save, revert, the menu.
+    let pv = PanelController(store: es, monitor: nil, onScreen: false)
+    check(!pv.spaceOpensPreview, "Space with nothing picked: a space for the search")
+    pv.mouseDown(row: 1, flags: [], clicks: 1)
+    check(pv.spaceOpensPreview, "Space with a row picked: the preview")
+    pv.view.field.stringValue = "bo"; pv.controlTextDidChange(Notification(name: .init("x")))
+    check(!pv.spaceOpensPreview || pv.sel.isEmpty, "Space after typing a search: a space")
+    pv.view.field.stringValue = ""; pv.filter()
+    let host = Flipped(frame: NSRect(x: 0, y: 0, width: 1728, height: 1117))
+    pv.preview.host = host
+    Ticker.manual = true
+    pv.mouseDown(row: 2, flags: [], clicks: 1)   // «first copy» (plain)
+    pv.togglePreview()
+    check(pv.preview.isOpen && pv.preview.entry?.id == eids[0], "Space opens the picked row")
+    var grow: [NSRect] = [pv.preview.boxFrame]
+    for _ in 0..<18 { Ticker.advance(1.0 / 60); grow.append(pv.preview.boxFrame) }
+    let fin = pv.preview.finalRect
+    let aspect = grow.allSatisfy { abs($0.width / $0.height - fin.width / fin.height) < 0.02 }
+    let w5 = (grow[5].width - grow[0].width) / (fin.width - grow[0].width)
+    let at = grow.firstIndex { $0 == fin } ?? 99
+    check(aspect && grow[0].width <= 40.5 && w5 > 0.75 && at == 15, "opens from the row's picture as one picture: \(Int(grow[0].width)) pt, \(Int(w5 * 100)) % at 83 ms, full at frame \(at) (250 ms)")
+    let tv = pv.preview.textForTest!
+    tv.setSelectedRange(NSRange(location: tv.string.count, length: 0))
+    tv.insertText(" and more", replacementRange: tv.selectedRange())
+    check(pv.preview.factsText.hasPrefix(counted(19, "character|characters")) && pv.preview.factsText.contains(counted(1, "line|lines")),
+          "facts count live: \(pv.preview.factsText)")
+    tv.setSelectedRange(NSRange(location: 0, length: 5))
+    pv.preview.toggle(.boldFontMask)
+    pv.preview.save()
+    let saved = es.reps(eids[0]).first?.map(\.type) ?? []
+    check(es.entries().first { $0.id == eids[0] }?.title == "first copy and more" && saved.contains(rtf) && pv.preview.revertShown,
+          "⌘B then save: rich text stored, title follows, Revert shown \(saved)")
+    pv.preview.revertToOriginal()
+    check(es.entries().first { $0.id == eids[0] }?.title == "first copy" && tv.string == "first copy" && !pv.preview.revertShown, "Revert to Original")
+    pv.closePreview()
+    var shut: [NSRect] = []
+    for _ in 0..<10 { Ticker.advance(1.0 / 60); shut.append(pv.preview.boxFrame) }
+    let closedAt = (shut.firstIndex { $0.width <= 40.5 } ?? 99) + 1
+    check(!pv.preview.isOpen && closedAt >= 7 && closedAt <= 9, "closes back into the row in \(closedAt) frames (Quick Look: ~8, 130 ms)")
+    Ticker.manual = false
+
+    let menu = pv.contextMenu(row: 1)!
+    check(menu.items.map(\.title) == ["Copy", "Copy as Plain Text", "Share…", "Open With", "", "Delete"], "menu: \(menu.items.map(\.title))")
+    check(menu.items[5].keyEquivalent == "\u{8}" && menu.items[5].keyEquivalentModifierMask == .command, "Delete shows ⌘⌫")
+    check(menu.items[3].submenu?.items.contains { $0.title == "TextEdit" } == true, "Open With lists TextEdit for a text")
+    let mpb = NSPasteboard(name: .init("com.geragaraza.clip.test.menu.\(getpid())"))
+    pv.pasteboard = mpb
+    pv.menuCopyPlain()
+    check(mpb.string(forType: .string) == "bold text" && mpb.pasteboardItems?.first?.types.contains(.rtf) == false, "Copy as Plain Text: the text without its style")
+    mpb.releaseGlobally()
+    try? FileManager.default.removeItem(at: edir)
+
     // Search speed: «search filtering in one frame» on a big history (5 000 entries of ~1.5 KB text).
     let sdir = tmpDir("search")
     let ss = try! Store(dir: sdir)
@@ -594,6 +658,33 @@ func render(app: String, theme: String, out: String, mode: String) {
     }
     _ = wait(1.5) { false }
     shoot(out)
+    if mode == "image" {   // an image's preview, settled (Quick Look's own view)
+        Ticker.manual = true
+        pc.preview.host = root
+        pc.sel.clear(); pc.mouseDown(row: rowOf(ids[12]), flags: [], clicks: 1)
+        pc.togglePreview()
+        for _ in 0...16 { Ticker.advance(1.0 / 60) }
+        _ = wait(1.5) { false }
+        shoot(out)
+    }
+    if mode == "preview" {
+        // Space on the picked row: the preview grows out of the row's picture over 250 ms (every 60 fps frame
+        // shot), then a word made bold, then it closes back into the row in 130 ms.
+        Ticker.manual = true
+        pc.preview.host = root
+        pc.sel.clear(); pc.mouseDown(row: rowOf(ids[7]), flags: [], clicks: 1)
+        pc.togglePreview()
+        for k in 0...16 { shoot(out.replacingOccurrences(of: ".png", with: String(format: "-o%02d.png", k))); Ticker.advance(1.0 / 60) }
+        if let tv = pc.preview.textForTest {
+            tv.setSelectedRange(NSRange(location: 0, length: 6)); pc.preview.toggle(.boldFontMask)
+            tv.setSelectedRange(NSRange(location: 8, length: 4)); pc.preview.toggle(.italicFontMask)
+            tv.setSelectedRange(NSRange(location: 0, length: 0))
+            pc.preview.textDidChange(Notification(name: .init("edit")))
+        }
+        shoot(out.replacingOccurrences(of: ".png", with: "-edit.png"))
+        pc.closePreview()
+        for k in 0...9 { shoot(out.replacingOccurrences(of: ".png", with: String(format: "-c%02d.png", k))); Ticker.advance(1.0 / 60) }
+    }
     if mode == "height" {
         // Typing that narrows the list: the rows change in one frame, then the bottom edge comes up in 200 ms.
         // Every 60 fps frame is drawn (time stepped by hand) and shot.

@@ -132,6 +132,9 @@ final class Thumbs {
         return i
     }
 
+    /// An entry changed (edited, reverted): its picture is made again.
+    func forget(_ id: Int64) { cache[id] = nil }
+
     func app(_ id: String?) -> NSImage? {
         guard let id else { return nil }
         if let i = apps[id] { return i }

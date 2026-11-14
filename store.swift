@@ -2,7 +2,7 @@
 // removable folder (~/.local/share/clip). No SwiftData: it needs macOS 14, and Maccy's SwiftData store grew to 1.89 GB
 // in 11 days from orphaned rows (issue #1496); here a representation row dies with its entry (ON DELETE CASCADE) and
 // a file is removed once no row names it. Used from the main thread only.
-import Foundation
+import AppKit
 import SQLite3
 
 /// How long the history is kept, as Apple orders such lists (Messages: 30 Days, 1 Year, Forever).
@@ -52,6 +52,9 @@ final class Store {
               entry INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE, item INTEGER NOT NULL,
               type TEXT NOT NULL, data BLOB, file TEXT, PRIMARY KEY(entry, item, type)) WITHOUT ROWID;
             CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS originals(
+              entry INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE, item INTEGER NOT NULL,
+              type TEXT NOT NULL, data BLOB, file TEXT, PRIMARY KEY(entry, item, type)) WITHOUT ROWID;
             PRAGMA user_version = 1;
             """)
     }
@@ -135,7 +138,7 @@ final class Store {
         let t = now.timeIntervalSince1970
         run("DELETE FROM entries WHERE deleted IS NOT NULL AND deleted < ?", [t - recentlyDeletedDays * 86400])
         if let s = keep.seconds { run("DELETE FROM entries WHERE copied < ?", [t - s]) }
-        let used = Set(query("SELECT DISTINCT file FROM reps WHERE file IS NOT NULL", [], { text($0, 0) ?? "" }))
+        let used = Set(query("SELECT file FROM reps WHERE file IS NOT NULL UNION SELECT file FROM originals WHERE file IS NOT NULL", [], { text($0, 0) ?? "" }))
         let fm = FileManager.default
         for sub in ["images", "blobs"] {
             for f in (try? fm.contentsOfDirectory(atPath: dir.appendingPathComponent(sub).path)) ?? [] where !used.contains(sub + "/" + f) {
@@ -147,6 +150,46 @@ final class Store {
             }
         }
         run("PRAGMA incremental_vacuum")
+    }
+
+    // MARK: editing (the Space preview)
+
+    /// An edited text replaces the entry's first item: RTF when it carries styling, always the plain text. The copy
+    /// as it was is kept once, the first time, so «Revert to Original» can bring it back (ClipBook's Restore). The
+    /// entry stays where it was in the list; its title, text, size and digest follow the new content.
+    func edit(_ id: Int64, plain: String, rtf: Data?) {
+        guard let old = entries().first(where: { $0.id == id }) else { return }
+        run("BEGIN")
+        if !hasOriginal(id) { run("INSERT INTO originals SELECT entry, item, type, data, file FROM reps WHERE entry = ?", [id]) }
+        run("DELETE FROM reps WHERE entry = ? AND item = 0", [id])
+        var reps = [Rep(type: NSPasteboard.PasteboardType.string.rawValue, data: Data(plain.utf8))]
+        if let rtf { reps.append(Rep(type: NSPasteboard.PasteboardType.rtf.rawValue, data: rtf)) }
+        for r in reps { run("INSERT INTO reps(entry, item, type, data, file) VALUES (?,?,?,?,?)", [id, 0, r.type, r.data, nil]) }
+        run("COMMIT")
+        refresh(id, from: self.reps(id), app: old.app)
+    }
+
+    func hasOriginal(_ id: Int64) -> Bool {
+        !query("SELECT 1 FROM originals WHERE entry = ? LIMIT 1", [id], { _ in 1 }).isEmpty
+    }
+
+    /// Puts the copy back as it was copied.
+    func revert(_ id: Int64) {
+        guard hasOriginal(id), let old = entries().first(where: { $0.id == id }) else { return }
+        run("BEGIN")
+        run("DELETE FROM reps WHERE entry = ?", [id])
+        run("INSERT INTO reps SELECT entry, item, type, data, file FROM originals WHERE entry = ?", [id])
+        run("DELETE FROM originals WHERE entry = ?", [id])
+        run("COMMIT")
+        refresh(id, from: self.reps(id), app: old.app)
+    }
+
+    /// The display fields of an entry made again from its items, through the same path a copy takes.
+    private func refresh(_ id: Int64, from items: [[Rep]], app: String?) {
+        let loaded = items.map { $0.map { Rep(type: $0.type, data: data($0)) } }
+        guard let (e, _) = prepare(Snapshot(items: loaded, source: app), dir: dir) else { return }
+        run("UPDATE entries SET kind = ?, title = ?, text = ?, bytes = ?, digest = ? WHERE id = ?",
+            [e.kind.rawValue, e.title, e.text, e.bytes, e.digest, id])
     }
 
     // MARK: settings

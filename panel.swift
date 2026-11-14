@@ -43,6 +43,12 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     private var undo: [([Int64], Selection)] = []
     private var pending: Int64?   // a plain click on a picked row among several: decided on mouse up (Finder)
     private var hiding = false
+    /// The Space preview (preview.swift).
+    lazy var preview: PreviewController = { let p = PreviewController(store: store); p.panel = self; return p }()
+    /// Typed into the search since the selection was last made: then Space is a space, not the preview.
+    private var typedSinceSelection = false
+    /// The row the open context menu belongs to (the share sheet comes out of it).
+    var menuRow: Int?
     /// Where ⌘C writes: the general pasteboard; a private one in tests.
     var pasteboard = NSPasteboard.general
     /// Off-screen renders draw the selection as in a focused window.
@@ -220,6 +226,8 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
 
     /// The selection changed: only the rows' colours, badges and the facts line change, in the same frame.
     func selectionChanged(scrollTo id: Int64? = nil) {
+        typedSinceSelection = false
+        defer { if preview.isOpen, let c = sel.cursor ?? sel.order.last, c != preview.entry?.id, let e = entry(c) { openPreview(e) } }
         for r in 0..<rows.count {
             if let c = view.table.view(atColumn: 0, row: r, makeIfNecessary: false) as? EntryCell, case .entry(let i) = rows[r] {
                 c.update(selected: sel.contains(shown[i].id), badge: sel.badge(shown[i].id), focused: focused)
@@ -336,13 +344,16 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
             move(-1, extending: true)
         case #selector(NSResponder.moveDownAndModifySelection(_:)), #selector(NSResponder.moveParagraphForwardAndModifySelection(_:)):
             move(1, extending: true)
-        case #selector(NSResponder.cancelOperation(_:)): hide()
+        case #selector(NSResponder.cancelOperation(_:)): preview.isOpen ? closePreview() : hide()
         default: return false
         }
         return true
     }
 
-    func controlTextDidChange(_ n: Notification) { filter() }
+    func controlTextDidChange(_ n: Notification) {
+        filter()
+        typedSinceSelection = true
+    }
 
     // MARK: showing and hiding
 
@@ -380,13 +391,16 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         guard let w = window, w.isVisible, !hiding else { return }
         hiding = true
         let d = 0.085 * slow
-        // Leaves with blur and fade and a slight growth, about 85 ms, as Spotlight does.
+        // Leaves with blur and fade and a slight growth, about 85 ms, as Spotlight does; an open preview fades with it.
         view.animateOut(duration: d)
+        let pw = preview.isOpen ? preview.window : nil
         NSAnimationContext.runAnimationGroup({ c in
             c.duration = d
             c.timingFunction = CAMediaTimingFunction(name: .easeIn)
             w.animator().alphaValue = 0
+            pw?.animator().alphaValue = 0
         }, completionHandler: {
+            self.preview.dismiss()
             guard self.hiding else { return }   // ⌥⌘C again while it was leaving: it stays
             w.orderOut(nil)
             w.alphaValue = 1
@@ -397,8 +411,66 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
 
     // A click outside: another window took the keyboard.
     func windowDidResignKey(_ n: Notification) {
-        selectionChanged()
-        hide()
+        // The preview's text took the keys (editing): stay. Anything else: hide, as a click outside.
+        DispatchQueue.main.async {
+            guard NSApp.keyWindow !== self.preview.window || self.preview.window == nil else { self.redrawSelection(); return }
+            self.redrawSelection()
+            if NSApp.keyWindow !== self.window { self.hide() }
+        }
+    }
+
+    /// The rows' colours follow whether the panel has the keys.
+    private func redrawSelection() {
+        let keep = typedSinceSelection
+        let open = preview.isOpen
+        if !open { selectionChanged() } else {
+            for r in 0..<rows.count {
+                if let c = view.table.view(atColumn: 0, row: r, makeIfNecessary: false) as? EntryCell, case .entry(let i) = rows[r] {
+                    c.update(selected: sel.contains(shown[i].id), badge: sel.badge(shown[i].id), focused: focused)
+                }
+            }
+        }
+        typedSinceSelection = keep
+    }
+
+    // MARK: preview
+
+    var spaceOpensPreview: Bool { preview.isOpen || (!sel.isEmpty && (query.isEmpty || !typedSinceSelection)) }
+
+    func togglePreview() {
+        if preview.isOpen { closePreview(); return }
+        guard let c = sel.cursor ?? sel.order.last, let e = entry(c) else { return }
+        openPreview(e)
+    }
+
+    func openPreview(_ e: Entry) {
+        let from = rowPictureRect(e.id) ?? NSRect(x: panelScreenRect.midX - 20, y: panelScreenRect.midY - 20, width: 40, height: 40)
+        let vis = screen?.visibleFrame ?? panelScreenRect.insetBy(dx: -400, dy: -400)
+        preview.open(e, from: from, panelRect: panelScreenRect, screen: vis)
+    }
+
+    func closePreview() {
+        guard let id = preview.entry?.id else { return }
+        preview.close(to: rowPictureRect(id))
+        window?.makeKey()
+        window?.makeFirstResponder(view.field)
+    }
+
+    /// The panel's rectangle in screen points (or in its window, for the off-screen renders).
+    var panelScreenRect: NSRect {
+        let r = view.convert(view.bounds, to: nil)
+        return view.window?.convertToScreen(r) ?? r
+    }
+
+    /// The row's picture in screen points, when the row is in sight.
+    func rowPictureRect(_ id: Int64) -> NSRect? {
+        guard let r = rows.firstIndex(where: { if case .entry(let i) = $0 { return shown[i].id == id }; return false }) else { return nil }
+        let row = view.table.rect(ofRow: r)   // from the table's geometry: the cell may not exist yet
+        let pic = NSRect(x: row.minX + listInset + 12, y: row.minY + (rowH - 40) / 2, width: 40, height: 40)
+        let inList = view.table.convert(pic, to: view.scroll)
+        guard view.scroll.bounds.contains(NSPoint(x: inList.midX, y: inList.midY)) else { return nil }
+        let r2 = view.table.convert(pic, to: nil)
+        return view.window?.convertToScreen(r2) ?? r2
     }
 
     // MARK: table
@@ -465,7 +537,17 @@ final class Panel: NSPanel {
         owner?.keyEquivalent(e) == true || super.performKeyEquivalent(with: e)
     }
 
-    override func cancelOperation(_ sender: Any?) { owner?.hide() }
+    override func cancelOperation(_ sender: Any?) { owner?.preview.isOpen == true ? owner?.closePreview() : owner?.hide() }
+
+    /// Space: the preview, when something is picked and the person is not typing a search (then it is a space).
+    override func sendEvent(_ e: NSEvent) {
+        if e.type == .keyDown, e.keyCode == 49, e.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
+           let o = owner, o.spaceOpensPreview {
+            o.togglePreview()
+            return
+        }
+        super.sendEvent(e)
+    }
 }
 
 // MARK: the view
@@ -687,6 +769,9 @@ final class ListTable: NSTableView {
         owner?.mouseDown(row: r, flags: e.modifierFlags, clicks: e.clickCount)
     }
     override func mouseUp(with e: NSEvent) { owner?.mouseUp() }
+    override func menu(for e: NSEvent) -> NSMenu? {
+        owner?.contextMenu(row: row(at: convert(e.locationInWindow, from: nil)))
+    }
     // Hook for later: drag out of the panel, several at once like Finder (clipboard.md, «Decided»).
 }
 

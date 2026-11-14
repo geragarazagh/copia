@@ -15,3 +15,10 @@
 "GB" = "ГБ";
 "TB" = "ТБ";
 "Reading the clipboard is off: Privacy & Security > Paste from Other Apps" = "Читання буфера обміну вимкнено: Приватність і безпека > Вставлення з інших програм";
+"line|lines" = "рядок|рядки|рядків";
+"Copy" = "Скопіювати";
+"Copy as Plain Text" = "Скопіювати як простий текст";
+"Share…" = "Поширити…";
+"Open With" = "Відкрити в";
+"Delete" = "Видалити";
+"Revert to Original" = "Відновити оригінал";

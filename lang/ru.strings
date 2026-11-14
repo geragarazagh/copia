@@ -15,3 +15,10 @@
 "GB" = "ГБ";
 "TB" = "ТБ";
 "Reading the clipboard is off: Privacy & Security > Paste from Other Apps" = "Чтение буфера обмена выключено: Конфиденциальность и безопасность > Вставка из других приложений";
+"line|lines" = "строка|строки|строк";
+"Copy" = "Скопировать";
+"Copy as Plain Text" = "Скопировать как простой текст";
+"Share…" = "Поделиться…";
+"Open With" = "Открыть в приложении";
+"Delete" = "Удалить";
+"Revert to Original" = "Вернуть к оригиналу";
