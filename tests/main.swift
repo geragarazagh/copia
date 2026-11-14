@@ -664,7 +664,8 @@ func general() {
 
 /// The approved mockup's content (round 3), newest last; the panel's renders and the trials' seed use it.
 func mockSpecs() -> [(Snapshot, Date)] {
-    let res = "/Users/harazha/.local/share/clipboard/mock/res/"
+    // CLIP_RES: a copy readable by the agents' own session (cs), whose user can't enter his home.
+    let res = ProcessInfo.processInfo.environment["CLIP_RES"] ?? "/Users/harazha/.local/share/clipboard/mock/res/"
     let day = Calendar.current.startOfDay(for: Date())
     func at(_ h: Int, _ m: Int, _ d: Int = 0) -> Date { day.addingTimeInterval(Double(d * 86400 + h * 3600 + m * 60)) }
     func txt(_ n: String) -> String { ((try? String(contentsOfFile: res + "text/\(n).txt", encoding: .utf8)) ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -703,7 +704,8 @@ func mockSpecs() -> [(Snapshot, Date)] {
 func render(app: String, theme: String, out: String, mode: String) {
     let motion = mode == "motion"
     strings = Bundle(path: app)!
-    let res = "/Users/harazha/.local/share/clipboard/mock/res/"
+    // CLIP_RES: a copy readable by the agents' own session (cs), whose user can't enter his home.
+    let res = ProcessInfo.processInfo.environment["CLIP_RES"] ?? "/Users/harazha/.local/share/clipboard/mock/res/"
     let dir = tmpDir("render")
     let links = mode == "links"   // the real Safari copies of tests/links, newest on top
     let lpb = NSPasteboard(name: .init("com.geragaraza.clip.render.\(getpid())"))
@@ -929,7 +931,10 @@ case "readtiff" where argv.count == 3:   // copy's helper: another process askin
     let d = NSPasteboard(name: .init(argv[2])).pasteboardItems?.first?.data(forType: .tiff)
     print(d.flatMap { NSBitmapImageRep(data: $0) }?.pixelsWide ?? 0); exit(0)
 case "seed" where argv.count == 3:   // the mockup's content into a data folder, for a trial run of the app
-    _ = seeded(URL(fileURLWithPath: argv[2]), mockSpecs()); exit(0)
+    // The link fixtures too (run from the source folder: they are read from tests/links), so the trial shows titles and pictures.
+    let lpb = NSPasteboard(name: .init("com.geragaraza.clip.test.\(getpid())"))
+    _ = seeded(URL(fileURLWithPath: argv[2]), mockSpecs() + linkSpecs(lpb).map { ($0.0, $0.1.addingTimeInterval(-86400)) })
+    lpb.releaseGlobally(); exit(0)
 case "render" where argv.count >= 5: render(app: argv[2], theme: argv[3], out: argv[4], mode: argv.count > 5 ? argv[5] : "")
 default:
     print("usage: clip-tests unit | capture | copy | general | links | render APP THEME OUT [motion]"); exit(2)
