@@ -135,7 +135,7 @@ final class App: NSObject, NSApplicationDelegate {
     }
 
     /// Trials in the agents' own login session (cs): mouse events posted to a process from outside are not routed to
-    /// its windows (measured on 27.2, 2026-11-14), so a trial writes lines «down|up|drag|rdown|rup|move X Y» (screen
+    /// its windows (measured on 27.2, 2026-11-14), so a trial writes lines «down|up|drag|rdown|rup|move X Y [cmd|shift]» (screen
     /// points, top-left origin) into the FIFO trial-mouse in the data folder, and the app posts each event into its own
     /// queue, where it takes the same path as a real one (hit testing, context menus, the drag's tracking loop). Read
     /// on a thread of its own: a run-loop source would wait while a tracking loop runs. Only with --trial.
@@ -152,7 +152,8 @@ final class App: NSObject, NSApplicationDelegate {
                 h.closeFile()
                 for line in text.split(separator: "\n") {
                     let f = line.split(separator: " ")
-                    guard f.count == 3, let t = types[f[0]], let x = Double(f[1]), let y = Double(f[2]) else { continue }
+                    guard f.count >= 3, let t = types[f[0]], let x = Double(f[1]), let y = Double(f[2]) else { continue }
+                    let mods: NSEvent.ModifierFlags = f.count > 3 && f[3] == "cmd" ? .command : f.count > 3 && f[3] == "shift" ? .shift : []
                     let p = NSPoint(x: x, y: top - y)
                     trialPointer = p
                     if t == .leftMouseDragged || t == .leftMouseUp {
@@ -160,7 +161,7 @@ final class App: NSObject, NSApplicationDelegate {
                         // inside the drag's tracking loop, which does not run the main queue. A drag keeps going to the
                         // window it started in, as the window server does.
                         guard let (n, o) = trialDown, let e = NSEvent.mouseEvent(
-                            with: t, location: NSPoint(x: p.x - o.x, y: p.y - o.y), modifierFlags: [],
+                            with: t, location: NSPoint(x: p.x - o.x, y: p.y - o.y), modifierFlags: mods,
                             timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: n, context: nil, eventNumber: 0,
                             clickCount: 1, pressure: t == .leftMouseUp ? 0 : 1) else { continue }
                         NSApp.postEvent(e, atStart: false)
@@ -170,7 +171,7 @@ final class App: NSObject, NSApplicationDelegate {
                             // over everything).
                             guard let w = NSApp.windows.filter({ $0.isVisible && $0.frame.contains(p) })
                                     .sorted(by: { ($0.level.rawValue, -$0.orderedIndex) > ($1.level.rawValue, -$1.orderedIndex) }).first,
-                                  let e = NSEvent.mouseEvent(with: t, location: w.convertPoint(fromScreen: p), modifierFlags: [],
+                                  let e = NSEvent.mouseEvent(with: t, location: w.convertPoint(fromScreen: p), modifierFlags: mods,
                                                              timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: w.windowNumber,
                                                              context: nil, eventNumber: 0, clickCount: 1,
                                                              pressure: t == .rightMouseUp ? 0 : 1) else { return }
