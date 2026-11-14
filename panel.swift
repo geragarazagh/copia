@@ -2,13 +2,20 @@
 // pointer, on real Liquid Glass (macOS 26+, following the person's Liquid Glass setting) or the system's popover
 // material before 26. Motion as Apple's, read frame by frame from Spotlight: it appears in about three frames, leaves
 // with blur and fade in about 85 ms, and every state change (search results, selection, deletion) lands in one frame;
-// nothing else moves. Measurements of the approved mockup (round 3): 760 × 720 pt, corner 22, field row 58, rows 60.
+// only the box moves. Its height follows what it holds, as Spotlight's: the field alone when nothing is listed, the
+// rows up to 720 pt, then the list scrolls; a change of height is the box's bottom edge moving in 200 ms over rows
+// already in place (motion.swift). Measurements of the approved mockup (round 3): 760 pt wide, at most 720, corner 22,
+// field row 58, rows 60.
 import AppKit
 
+/// The width, and the tallest the panel gets (the approved mockup's size).
 let panelSize = NSSize(width: 760, height: 720)
 let panelCorner: CGFloat = 22
 /// Room around the panel inside its window, so the 3 % growth of the leaving animation is not cut by the window edge.
 let panelMargin: CGFloat = 16
+/// Space kept between the panel and the edges of the screen's visible frame. Spotlight's top sits 6 pt under the menu
+/// bar (measured: y 38 on this Mac's 32 pt menu bar); the bottom keeps the same.
+let screenGap: CGFloat = 6
 let fieldH: CGFloat = 58, factsH: CGFloat = 40, rowH: CGFloat = 60, listInset: CGFloat = 8
 
 final class Flipped: NSView { override var isFlipped: Bool { true } }
@@ -41,7 +48,7 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     /// Off-screen renders draw the selection as in a focused window.
     var forceFocus = false
     /// Slows every animation by this factor, to step its frames in a test (CLIP_SLOW).
-    var slow = Double(ProcessInfo.processInfo.environment["CLIP_SLOW"] ?? "") ?? 1
+    var slow: Double { Ticker.slow }
 
     init(store: Store, monitor: Monitor?, onScreen: Bool = true) {
         self.store = store
@@ -108,7 +115,68 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         rows = r
         view.table.reloadData()
         updateFacts()
+        fitHeight(animated: isVisible || testVisible)
     }
+
+    // MARK: height and place
+
+    /// Tests: the visible panel's path (filter, then an animated fit) without a window on the screen.
+    func fitHeightAfterFilterForTest() { testVisible = true; filter(); testVisible = false }
+    private var testVisible = false
+
+    /// The panel's height for what it lists: the field alone with nothing to list (and no note to show), otherwise
+    /// field, rows and footer, at most panelSize.height (then the list scrolls) and never taller than the screen.
+    func contentHeight() -> CGFloat {
+        let note = monitor?.denied == true
+        if rows.isEmpty && !note { return fieldH }
+        var list: CGFloat = 8   // the scroll view's bottom inset
+        for r in rows.indices { list += tableView(view.table, heightOfRow: r) + view.table.intercellSpacing.height }
+        if rows.isEmpty { list = 0 }
+        var limit = panelSize.height
+        if let s = screen { limit = min(limit, s.visibleFrame.height - 2 * screenGap) }
+        return min(limit, fieldH + 1 + list + 1 + factsH)
+    }
+
+    /// The height drawn now, and where the top edge is on the screen (screen points; AppKit's y grows upwards).
+    private(set) var height: CGFloat = 0
+    private(set) var top: CGFloat = 0
+    private(set) var screen: NSScreen?
+    private let sizeTicker = Ticker()
+
+    /// Spotlight's way: the new rows are already in place (one frame), then the bottom edge moves to the new height,
+    /// 200 ms with the system's ease, the top edge staying where it is, so the field never moves under the typing.
+    /// Should the bottom edge leave the screen (a copy arriving while the panel sits at the bottom), the top moves
+    /// up with it, just enough.
+    func fitHeight(animated: Bool) {
+        let h1 = contentHeight()
+        var t1 = top
+        if let s = screen, t1 - h1 < s.visibleFrame.minY + screenGap { t1 = s.visibleFrame.minY + screenGap + h1 }
+        guard h1 != height || t1 != top else { return }
+        guard animated else { sizeTicker.stop(); setBox(height: h1, top: t1); return }
+        let h0 = height, t0 = top, d = 0.2
+        sizeTicker.run { [weak self] t in
+            let p = Curve.ease(min(1, t / d))
+            self?.setBox(height: mix(h0, h1, p).rounded(), top: mix(t0, t1, p).rounded())
+            return t < d
+        }
+    }
+
+    /// Puts the box at this height and top: the view, and the window around it with its margin.
+    func setBox(height h: CGFloat, top t: CGFloat) {
+        height = h; top = t
+        view.setFrameSize(NSSize(width: panelSize.width, height: h))
+        guard let w = window, let s = screen else { return }
+        let x = s.visibleFrame.midX - panelSize.width / 2 + dragX
+        w.setFrame(NSRect(x: x - panelMargin, y: t - h - panelMargin, width: panelSize.width + 2 * panelMargin,
+                          height: h + 2 * panelMargin), display: true)
+        w.invalidateShadow()
+    }
+
+    /// A sideways pull while dragging (rubber band); 0 at rest: the panel is always centred across.
+    var dragX: CGFloat = 0
+
+    /// The place chosen for this screen (drag and snap, place.swift); the middle until the person moves it.
+    func placeFor(_ s: NSScreen) -> Place { .middle }
 
     func entry(_ id: Int64) -> Entry? { all.first { $0.id == id } }
 
@@ -280,12 +348,14 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         sel.clear(); pending = nil
         reload()
         view.table.scrollRowToVisible(0)
-        // Centred on the screen with the pointer, as the system centres a window (NSWindow.center: horizontally in the
-        // middle, a little above the vertical middle), per screen: no positioning of our own.
+        // On the screen with the pointer, centred across its visible frame (what the menu bar and the Dock leave), at
+        // the place the person chose for that screen: the middle by default, his pick «посередине».
         let mouse = NSEvent.mouseLocation
-        let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
-        if let s = screen { w.setFrameOrigin(NSPoint(x: s.visibleFrame.midX - w.frame.width / 2, y: s.visibleFrame.midY - w.frame.height / 2)) }
-        w.center()
+        screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
+        sizeTicker.stop()
+        dragX = 0
+        let h = contentHeight()
+        setBox(height: h, top: screen.map { restingTop(placeFor($0), height: h, on: $0) } ?? 0)
         view.resetMotion()
         w.alphaValue = 0
         w.makeKeyAndOrderFront(nil)
@@ -400,6 +470,8 @@ final class PanelView: NSView {
     private let facts = NSTextField(labelWithString: "")
     private let icon = NSImageView()
     private let content = Flipped()
+    private let footer = Flipped()
+    private let topLine = Separator(), bottomLine = Separator()
     private var background: NSView!
 
     override var isFlipped: Bool { true }
@@ -437,7 +509,6 @@ final class PanelView: NSView {
             v.addSubview(content)
             background = v
         }
-        background.autoresizingMask = [.width, .height]
         addSubview(background)
 
         icon.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)?
@@ -458,10 +529,9 @@ final class PanelView: NSView {
         field.frame = NSRect(x: 50, y: (fieldH - fh) / 2, width: panelSize.width - 50 - 20, height: fh)
         content.addSubview(field)
 
-        content.addSubview(Separator(frame: NSRect(x: 0, y: fieldH, width: panelSize.width, height: 1)))
+        content.addSubview(topLine)
 
-        let listH = panelSize.height - fieldH - 1 - 1 - factsH
-        scroll.frame = NSRect(x: 0, y: fieldH + 1, width: panelSize.width, height: listH)
+        scroll.frame = NSRect(x: 0, y: fieldH + 1, width: panelSize.width, height: panelSize.height - fieldH - 2 - factsH)
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
@@ -483,11 +553,37 @@ final class PanelView: NSView {
         scroll.documentView = table
         content.addSubview(scroll)
 
-        content.addSubview(Separator(frame: NSRect(x: 0, y: panelSize.height - factsH - 1, width: panelSize.width, height: 1)))
-        facts.frame = NSRect(x: 20, y: panelSize.height - factsH + (factsH - 17) / 2, width: panelSize.width - 40, height: 17)
         facts.alignment = .center
         facts.lineBreakMode = .byTruncatingTail
-        content.addSubview(facts)
+        footer.addSubview(bottomLine)
+        footer.addSubview(facts)
+        content.addSubview(footer)
+        // The box clips what it holds, with its own rounded shape: while its edge moves, a row or the footer line
+        // shows only inside it, never past a corner.
+        content.wantsLayer = true
+        content.layer?.masksToBounds = true
+        content.layer?.cornerRadius = panelCorner
+        content.layer?.cornerCurve = .continuous
+        layoutBox()
+    }
+
+    /// The footer (a hairline and the facts line) rides the bottom edge; when the box is shorter than field +
+    /// footer it stays under the field and the edge cuts it, so it is never drawn over the field.
+    private func layoutBox() {
+        let w = bounds.width, h = bounds.height
+        background.frame = bounds
+        content.frame = bounds
+        topLine.frame = NSRect(x: 0, y: fieldH, width: w, height: 1)
+        let fy = max(h - factsH - 1, fieldH + 1)
+        footer.frame = NSRect(x: 0, y: fy, width: w, height: factsH + 1)
+        bottomLine.frame = NSRect(x: 0, y: 0, width: w, height: 1)
+        facts.frame = NSRect(x: 20, y: 1 + (factsH - 17) / 2, width: w - 40, height: 17)
+        scroll.frame = NSRect(x: 0, y: fieldH + 1, width: w, height: max(0, fy - fieldH - 1))
+    }
+
+    override func setFrameSize(_ s: NSSize) {
+        super.setFrameSize(s)
+        if background != nil { layoutBox() }
     }
 
     required init?(coder: NSCoder) { fatalError() }

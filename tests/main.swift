@@ -190,6 +190,43 @@ func unit() {
     check(hk.registerHotKey() == noErr, "⌥⌘C registered")
     hk.unregisterHotKey()
 
+    // Height follows the content (Spotlight's): the field alone with nothing listed, rows + footer, at most 720.
+    let hdir = tmpDir("height")
+    let hs = try! Store(dir: hdir)
+    let hc = PanelController(store: hs, monitor: nil, onScreen: false)
+    check(hc.contentHeight() == fieldH && hc.view.frame.height == fieldH, "empty history: the field alone (\(hc.contentHeight()))")
+    for i in 0..<3 { let (e, it) = prepare(textSnap("row \(i)"), dir: hdir, at: now.addingTimeInterval(Double(i)))!; hs.add(e, it) }
+    hc.reload()
+    let three = fieldH + 1 + (29 + 2) + 3 * (rowH + 2) + 8 + 1 + factsH
+    check(hc.contentHeight() == three && hc.view.frame.height == three, "three rows: \(hc.contentHeight()) = \(three)")
+    for i in 3..<40 { let (e, it) = prepare(textSnap("row \(i)"), dir: hdir, at: now.addingTimeInterval(Double(i)))!; hs.add(e, it) }
+    hc.reload()
+    check(hc.contentHeight() == panelSize.height, "many rows: capped at \(panelSize.height), then the list scrolls (\(hc.contentHeight()))")
+    hc.view.field.stringValue = "nothing like this"; hc.filter()
+    check(hc.view.frame.height == fieldH, "no match: the field alone")
+    // Animated: only the bottom edge moves, 200 ms eased, top fixed, every 60 fps frame between the two heights.
+    Ticker.manual = true
+    hc.view.field.stringValue = ""; hc.filter()   // not visible: no animation
+    check(hc.view.frame.height == panelSize.height, "not shown: the height changes at once")
+    hc.setBox(height: panelSize.height, top: 900)
+    hc.view.field.stringValue = "row 7"; hc.fitHeightAfterFilterForTest()
+    var hs60: [CGFloat] = [hc.height]
+    for _ in 0..<20 { Ticker.advance(1.0 / 60); hs60.append(hc.height) }
+    let target = hc.contentHeight()
+    let settled = hs60.firstIndex(of: target) ?? 99
+    check(zip(hs60, hs60.dropFirst()).allSatisfy { $0 >= $1 } && settled >= 10 && settled <= 13 && hc.top == 900,
+          "shrinking: monotonic, settled on frame \(settled) (12 = 200 ms), top fixed: \(hs60.map { Int($0) })")
+    Ticker.manual = false
+    try? FileManager.default.removeItem(at: hdir)
+
+    // The middle place: the box's centre on the visible frame's centre, on every screen.
+    for sc in NSScreen.screens {
+        let t = restingTop(.middle, height: 400, on: sc)
+        check(abs((t - 200) - sc.visibleFrame.midY) <= 0.5, "middle of \(sc.localizedName): centre \(t - 200) vs \(sc.visibleFrame.midY)")
+        check(restingTop(.top, height: 400, on: sc) <= sc.visibleFrame.maxY - screenGap
+              && restingTop(.bottom, height: 400, on: sc) - 400 == sc.visibleFrame.minY + screenGap, "top and bottom inside the visible frame")
+    }
+
     // Search speed: «search filtering in one frame» on a big history (5 000 entries of ~1.5 KB text).
     let sdir = tmpDir("search")
     let ss = try! Store(dir: sdir)
@@ -358,6 +395,25 @@ func copyTests(_ pb: NSPasteboard) {
           "mixed selection: 5 items in order \(ty)")
     check(ty.allSatisfy { $0.contains(own) } && ty.count == (pb.pasteboardItems?.count ?? 0), "the marker sits inside the items, no item of its own")
 
+    // A picture copied with its file (screenshot tools, Pixlift: file URL + PNG + TIFF) is read without the TIFF;
+    // it goes back with one, made on request, and another process gets it (Qt reads images only from TIFF).
+    let shotFile = dir.appendingPathComponent("shot.png"); try! imgs[1].write(to: shotFile)
+    let withFile = Snapshot(items: [[Rep(type: furl, data: Data(shotFile.absoluteString.utf8)), Rep(type: png, data: imgs[1])]], source: "com.geragaraza.pixlift")
+    let (wfe, wfi) = prepare(withFile, dir: dir)!
+    let wfid = st.add(wfe, wfi)
+    r = Clip.write([(st.entries().first { $0.id == wfid }!, st.reps(wfid))], store: st, to: pb)
+    ty = types(pb)
+    check(ty.count == 1 && Set(ty[0]).isSuperset(of: [furl, png, tiff]), "image with its file: file URL + PNG + TIFF \(ty)")
+    let reader = Process()
+    reader.executableURL = URL(fileURLWithPath: argv[0])
+    reader.arguments = ["readtiff", pb.name.rawValue]
+    let rpipe = Pipe(); reader.standardOutput = rpipe
+    try! reader.run()
+    _ = wait(5) { !reader.isRunning }   // our run loop must turn: the TIFF is made here when the other process asks
+    let answer = String(data: rpipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    check(answer == "400", "another process reads the TIFF: \(answer ?? "nil") px wide")
+    // The two-image copy of the trial shows a stack of its pictures, not a document icon (drawn: renders).
+
     // The monitor does not take our write back into the history.
     let m = Monitor(pb)
     var got = false
@@ -416,7 +472,8 @@ func general() {
 
 /// The approved mockup's content, through the real capture path, into a store; the panel drawn over a desktop
 /// picture in one window under the desktop (never seen), captured with screencapture -l.
-func render(app: String, theme: String, out: String, motion: Bool) {
+func render(app: String, theme: String, out: String, mode: String) {
+    let motion = mode == "motion"
     strings = Bundle(path: app)!
     let res = "/Users/harazha/.local/share/clipboard/mock/res/"
     let dir = tmpDir("render")
@@ -443,14 +500,21 @@ func render(app: String, theme: String, out: String, motion: Bool) {
         (textSnap("#0A84FF", app: "com.apple.DigitalColorMeter"), at(7, 30)),
         (textSnap(txt("pageC")), at(7, 31)),
         (imageSnap(shot("2026-11-14 07-34-26.png")), at(7, 34)),
+        // The trial's faults: several images in one copy, and two picture files with their data (a stack each).
+        (Snapshot(items: [[Rep(type: png, data: shot("2026-11-14 07-11-29.png"))], [Rep(type: png, data: shot("2026-11-13 18-47-05.png"))],
+                          [Rep(type: png, data: shot("2026-11-14 07-34-26.png"))]], source: "com.apple.Safari"), at(7, 36)),
+        (files([URL(fileURLWithPath: res + "img_Mac_Blue-0.jpg"), URL(fileURLWithPath: res + "img_iMac_Orange-0.jpg")], "com.apple.finder"), at(7, 37)),
     ]
-    let (st, ids) = seeded(dir, specs)
+    let few = mode == "few", empty = mode == "empty"
+    let (st, ids) = seeded(dir, empty ? [] : few ? Array(specs.suffix(3)) : specs)
     let pc = PanelController(store: st, monitor: nil, onScreen: false)
     pc.forceFocus = true
     // Picked in the mockup's order: the dictated message, page A, page C, the screenshot.
     let rowOf = { (id: Int64) in pc.rows.firstIndex { if case .entry(let i) = $0 { return pc.shown[i].id == id }; return false }! }
-    pc.mouseDown(row: rowOf(ids[7]), flags: [], clicks: 1)
-    for k in [9, 11, 12] { pc.mouseDown(row: rowOf(ids[k]), flags: .command, clicks: 1) }
+    if !few && !empty {
+        pc.mouseDown(row: rowOf(ids[7]), flags: [], clicks: 1)
+        for k in [9, 11, 12] { pc.mouseDown(row: rowOf(ids[k]), flags: .command, clicks: 1) }
+    }
 
     NSApp.appearance = NSAppearance(named: theme == "dark" ? .darkAqua : .aqua)
     let SW: CGFloat = 1728, SH: CGFloat = 1117
@@ -462,7 +526,7 @@ func render(app: String, theme: String, out: String, motion: Bool) {
     bg.image = NSImage(contentsOfFile: res + (theme == "dark" ? "bg-1.jpg" : "bg-0.jpg"))
     bg.imageScaling = .scaleAxesIndependently
     root.addSubview(bg)
-    pc.view.frame.origin = NSPoint(x: (SW - panelSize.width) / 2, y: (SH - panelSize.height) / 2 - 20)
+    pc.view.frame.origin = NSPoint(x: (SW - panelSize.width) / 2, y: ((SH - pc.view.frame.height) / 2).rounded())
     root.addSubview(pc.view)
     win.contentView = root
     win.setFrame(NSRect(x: 0, y: 0, width: SW, height: SH), display: true)
@@ -474,6 +538,24 @@ func render(app: String, theme: String, out: String, motion: Bool) {
     }
     _ = wait(1.5) { false }
     shoot(out)
+    if mode == "height" {
+        // Typing that narrows the list: the rows change in one frame, then the bottom edge comes up in 200 ms.
+        // Every 60 fps frame is drawn (time stepped by hand) and shot.
+        Ticker.manual = true
+        pc.fitHeightAfterFilterForTest()
+        pc.view.field.stringValue = "http"
+        pc.fitHeightAfterFilterForTest()
+        for k in 0...14 {
+            shoot(out.replacingOccurrences(of: ".png", with: String(format: "-h%02d.png", k)))
+            Ticker.advance(1.0 / 60)
+        }
+        pc.view.field.stringValue = ""
+        pc.fitHeightAfterFilterForTest()
+        for k in 0...14 {
+            shoot(out.replacingOccurrences(of: ".png", with: String(format: "-g%02d.png", k)))
+            Ticker.advance(1.0 / 60)
+        }
+    }
     if motion {
         // The leaving animation, 20 × slower, a frame every 1/60 s of real time: blur and growth on the glass (the
         // window's own fade is replaced by the view's here, since the picture behind shares the window).
@@ -503,7 +585,10 @@ case "copy":
     let pb = NSPasteboard(name: .init("com.geragaraza.clip.test.\(getpid())"))
     copyTests(pb); pb.releaseGlobally(); finish("copy")
 case "general": general(); finish("general")
-case "render" where argv.count >= 5: render(app: argv[2], theme: argv[3], out: argv[4], motion: argv.count > 5 && argv[5] == "motion")
+case "readtiff" where argv.count == 3:   // copy's helper: another process asking for the TIFF
+    let d = NSPasteboard(name: .init(argv[2])).pasteboardItems?.first?.data(forType: .tiff)
+    print(d.flatMap { NSBitmapImageRep(data: $0) }?.pixelsWide ?? 0); exit(0)
+case "render" where argv.count >= 5: render(app: argv[2], theme: argv[3], out: argv[4], mode: argv.count > 5 ? argv[5] : "")
 default:
     print("usage: clip-tests unit | capture | copy | general | render APP THEME OUT [motion]"); exit(2)
 }

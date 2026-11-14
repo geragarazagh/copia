@@ -50,6 +50,17 @@ enum Clip {
                         for r in reps where r.type != NSPasteboard.PasteboardType.source.rawValue {
                             it.setData(store.data(r) ?? Data(), forType: .init(r.type))
                         }
+                        // A picture copied with its file (a screenshot tool, Pixlift, the test CLI: file URL + PNG +
+                        // TIFF) was read without the TIFF (the same picture as the PNG, often made on request and
+                        // several times bigger). It goes back with one again, made when asked, since Qt apps read an
+                        // image only from TIFF (the v0 trial 2026-11-14 found it missing).
+                        let tiff = NSPasteboard.PasteboardType.tiff.rawValue
+                        if !reps.contains(where: { $0.type == tiff }),
+                           let r = reps.first(where: { $0.type == NSPasteboard.PasteboardType.png.rawValue }) {
+                            let p = r.file.map { TIFFProvider(png: store.dir.appendingPathComponent($0)) } ?? TIFFProvider(data: r.data ?? Data())
+                            it.setDataProvider(p, forTypes: [.tiff])
+                            providers.append(p)
+                        }
                         out.append(it)
                     }
                 }
@@ -101,11 +112,13 @@ enum Clip {
 final class TIFFProvider: NSObject, NSPasteboardItemDataProvider {
     /// The providers of the current clipboard content, kept alive until the next write replaces them.
     nonisolated(unsafe) static var live: [TIFFProvider] = []
-    let png: URL
-    init(png: URL) { self.png = png }
+    let png: URL?, data: Data?
+    init(png: URL) { self.png = png; data = nil }
+    init(data: Data) { png = nil; self.data = data }
 
     func pasteboard(_ pasteboard: NSPasteboard?, item: NSPasteboardItem, provideDataForType type: NSPasteboard.PasteboardType) {
-        guard type == .tiff, let src = CGImageSourceCreateWithURL(png as CFURL, nil) else { return }
+        guard type == .tiff, let src = png.map({ CGImageSourceCreateWithURL($0 as CFURL, nil) }) ?? data.map({ CGImageSourceCreateWithData($0 as CFData, nil) }),
+              let src else { return }
         let out = NSMutableData()
         guard let dst = CGImageDestinationCreateWithData(out, "public.tiff" as CFString, 1, nil) else { return }
         CGImageDestinationAddImageFromSource(dst, src, 0, nil)

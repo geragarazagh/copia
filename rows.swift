@@ -89,7 +89,7 @@ func metaText(_ e: Entry) -> String {
         if e.title != u { p.append(u) }
     case .color: if let (r, g, b) = rgb(e.title) { p.append("RGB \(r) · \(g) · \(b)") }
     case .image:
-        if e.width > 0 { p.append("\(e.width) × \(e.height)") } else { p.append(counted(e.count, "object|objects")) }
+        if e.width > 0 { p.append("\(e.width) × \(e.height)") }   // several: the title already says how many
         p.append(sizeText(e.bytes))
     case .files:   // several files: the title already says how many
         if e.bytes > 0 { p.append(sizeText(e.bytes)) }
@@ -146,6 +146,12 @@ final class Thumbs {
         let s: CGFloat = 40
         switch e.kind {
         case .image:
+            if e.count > 1 {   // several images in one copy: a small stack of the first three
+                let png = NSPasteboard.PasteboardType.png.rawValue
+                let pics = store.reps(e.id).compactMap { $0.first { $0.type == png }?.file }.prefix(3)
+                    .compactMap { picture(store.dir.appendingPathComponent($0)) }.map { NSImage(cgImage: $0, size: .zero) }
+                if pics.count > 1 { return stack(pics.map { ($0, true) }, side: s) }
+            }
             if let f = e.thumb, let cg = picture(store.dir.appendingPathComponent(f)) {
                 return rounded(NSImage(cgImage: cg, size: .zero), side: s)
             }
@@ -163,39 +169,75 @@ final class Thumbs {
                 return true
             }
         case .files:
+            // The first files, each as its picture when it is one (a screenshot copied in Finder) or as its icon.
+            let paths = filePaths(e, store: store)
             let names = e.text.components(separatedBy: "\n")
-            func ic(_ i: Int) -> NSImage {
-                if i == 0, let p = e.thumb, FileManager.default.fileExists(atPath: p) { return NSWorkspace.shared.icon(forFile: p) }
-                let ext = (names[min(i, names.count - 1)] as NSString).pathExtension
-                return NSWorkspace.shared.icon(for: UTType(filenameExtension: ext) ?? .data)
-            }
-            // One picture file (a screenshot copied by Pixlift or Finder): the picture itself, as for an image.
-            if e.count == 1, let p = e.thumb, UTType(filenameExtension: (p as NSString).pathExtension)?.conforms(to: .image) == true,
-               let cg = picture(URL(fileURLWithPath: p)) {
-                return rounded(NSImage(cgImage: cg, size: .zero), side: s)
-            }
-            if e.count == 1 { return ic(0) }
-            // Several files: three of their icons fanned out, as a stack of papers.
-            let icons = (0..<min(3, e.count)).map(ic)
-            return NSImage(size: NSSize(width: s, height: s), flipped: false) { _ in
-                let spots: [(CGFloat, CGFloat, CGFloat)] = [(-0.16, 0.06, 8), (0.16, 0.06, -8), (0, -0.04, 0)]
-                for (k, im) in icons.enumerated() {   // the last drawn, the middle one, lies on top
-                    let (dx, dy, deg) = spots[icons.count == 2 ? k + 1 : k]
-                    NSGraphicsContext.saveGraphicsState()
-                    let t = NSAffineTransform()
-                    t.translateX(by: s / 2 + dx * s, yBy: s / 2 + dy * s)
-                    t.rotate(byDegrees: deg)
-                    t.concat()
-                    im.draw(in: NSRect(x: -s * 0.4, y: -s * 0.4, width: s * 0.8, height: s * 0.8))
-                    NSGraphicsContext.restoreGraphicsState()
+            func card(_ i: Int) -> (NSImage, Bool) {
+                if i < paths.count {
+                    let p = paths[i]
+                    if UTType(filenameExtension: (p as NSString).pathExtension)?.conforms(to: .image) == true,
+                       let cg = picture(URL(fileURLWithPath: p)) { return (NSImage(cgImage: cg, size: .zero), true) }
+                    if FileManager.default.fileExists(atPath: p) { return (NSWorkspace.shared.icon(forFile: p), false) }
                 }
-                return true
+                let ext = (names[min(i, names.count - 1)] as NSString).pathExtension
+                return (NSWorkspace.shared.icon(for: UTType(filenameExtension: ext) ?? .data), false)
             }
+            if e.count == 1 {
+                let (im, isPicture) = card(0)
+                return isPicture ? rounded(im, side: s) : im
+            }
+            return stack((0..<min(3, e.count)).map(card), side: s)
         case .other: return icon(.data)
         }
     }
 
     private func icon(_ t: UTType) -> NSImage { NSWorkspace.shared.icon(for: t) }
+
+    /// The paths of a files entry's items, in order (from its stored file URLs).
+    private func filePaths(_ e: Entry, store: Store) -> [String] {
+        let furl = NSPasteboard.PasteboardType.fileURL.rawValue
+        let found = store.reps(e.id).prefix(3).compactMap { $0.first { $0.type == furl } }
+            .compactMap { store.data($0).flatMap { String(data: $0, encoding: .utf8) }.flatMap(URL.init(string:))?.path }
+        return found.isEmpty ? (e.thumb.map { [$0] } ?? []) : found
+    }
+
+    /// A small stack, as Finder draws several files being dragged: the first on top, each next one a step up and to
+    /// the right and a little smaller, behind it. Pictures get rounded corners, a hairline and a soft shadow so the
+    /// cards stay apart; icons keep their own shapes.
+    private func stack(_ cards: [(NSImage, Bool)], side s: CGFloat) -> NSImage {
+        NSImage(size: NSSize(width: s, height: s), flipped: false) { _ in
+            let step: CGFloat = 4, n = cards.count
+            let span = step * CGFloat(n - 1)
+            for k in stride(from: n - 1, through: 0, by: -1) {
+                let (im, isPicture) = cards[k]
+                let scale = 1 - 0.08 * CGFloat(k)
+                let c = NSPoint(x: s / 2 - span / 2 + step * CGFloat(k), y: s / 2 - span / 2 + step * CGFloat(k))
+                NSGraphicsContext.saveGraphicsState()
+                if isPicture {
+                    let box = s * 0.74 * scale
+                    let a = im.size.width / max(1, im.size.height)
+                    let w = a >= 1 ? box : box * a, h = a >= 1 ? box / a : box
+                    let r = NSRect(x: c.x - w / 2, y: c.y - h / 2, width: w, height: h)
+                    let p = NSBezierPath(roundedRect: r, xRadius: s * 0.08, yRadius: s * 0.08)
+                    let sh = NSShadow()
+                    sh.shadowBlurRadius = 1.5; sh.shadowOffset = NSSize(width: 0, height: -0.5)
+                    sh.shadowColor = NSColor.black.withAlphaComponent(0.3)
+                    sh.set()
+                    NSColor.white.setFill(); p.fill()
+                    NSShadow().set()
+                    p.addClip()
+                    im.draw(in: r)
+                    NSColor.labelColor.withAlphaComponent(0.15).setStroke()
+                    p.lineWidth = 0.5; p.stroke()
+                } else {
+                    let box = s * 0.84 * scale
+                    im.draw(in: NSRect(x: c.x - box / 2, y: c.y - box / 2, width: box, height: box))
+                }
+                NSGraphicsContext.restoreGraphicsState()
+            }
+            return true
+        }
+    }
 
     /// A small copy of a picture file (160 px: 40 pt at 2× and a margin), read without decoding the whole picture.
     private func picture(_ u: URL) -> CGImage? {
