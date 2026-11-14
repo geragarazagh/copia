@@ -45,6 +45,7 @@ extension PanelController: NSMenuDelegate {
         it.setString("1", forType: .own)
         pasteboard.writeObjects([it])
         monitor?.ownCount = pasteboard.changeCount
+        used(sel.order)
         hide()
     }
 

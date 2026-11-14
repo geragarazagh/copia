@@ -62,39 +62,103 @@ final class Store {
             for c in ["url", "picture"] where !cols.contains(c) { try exec("ALTER TABLE entries ADD COLUMN \(c) TEXT") }
             try exec("PRAGMA user_version = 2")
         }
+        // Version 3 (0.5): the content key (contentKey in model.swift), filled for every entry already kept, and the
+        // twins it finds merged into their newest copy, as a copy made today would be.
+        if query("PRAGMA user_version", [], { int($0, 0) }).first ?? 0 < 3 {
+            let cols = Set(query("PRAGMA table_info(entries)", [], { text($0, 1) ?? "" }))
+            if !cols.contains("ckey") { try exec("ALTER TABLE entries ADD COLUMN ckey TEXT") }
+            try exec("CREATE INDEX IF NOT EXISTS entries_ckey ON entries(ckey)")
+            run("BEGIN")
+            for id in query("SELECT id FROM entries", [], { int($0, 0) }) {
+                let k = contentKey(reps(id)) { self.data($0) }
+                run("UPDATE entries SET ckey = ? WHERE id = ?", [k, id])
+            }
+            mergeTwins()
+            run("PRAGMA user_version = 3")
+            run("COMMIT")
+        }
+    }
+
+    /// Entries with the same content key become one: the newest copy stays (a live one before one in Recently
+    /// Deleted), with the latest date of the group; the rest are removed.
+    private func mergeTwins() {
+        let groups = query("SELECT ckey FROM entries WHERE ckey IS NOT NULL GROUP BY ckey HAVING COUNT(*) > 1", [], { text($0, 0) ?? "" })
+        for k in groups {
+            let rows = query("SELECT id, copied FROM entries WHERE ckey = ? ORDER BY deleted IS NOT NULL, copied DESC, id DESC", [k],
+                             { (int($0, 0), sqlite3_column_double($0, 1)) })
+            guard let keep = rows.first else { continue }
+            let latest = rows.map(\.1).max() ?? keep.1
+            run("UPDATE entries SET copied = ? WHERE id = ?", [latest, keep.0])
+            for r in rows.dropFirst() { run("DELETE FROM entries WHERE id = ?", [r.0]) }
+        }
     }
 
     deinit { sqlite3_close_v2(db) }
 
     // MARK: entries
 
-    /// Adds a copy, or, when the same content is already there (the same digest), moves that entry to now: copying
-    /// a thing again brings it to the top instead of making a twin, and brings it back from Recently Deleted.
+    /// Adds a copy, or, when the same thing is already there (the same content key, else the same digest), moves that
+    /// entry to now: copying a thing again, from anywhere, brings it to the top instead of making a twin, and brings it
+    /// back from Recently Deleted. The new copy's types replace the old ones (it is what the clipboard holds now: the
+    /// same text copied from Safari after Notes comes back with Safari's rich text); an edit's original stays.
     @discardableResult
     func add(_ e: Entry, _ items: [[Rep]]) -> Int64 {
-        if let id = query("SELECT id FROM entries WHERE digest = ? ORDER BY copied DESC LIMIT 1", [e.digest], { int($0, 0) }).first {
+        let found = e.key.flatMap { k in query("SELECT id, digest FROM entries WHERE ckey = ? ORDER BY copied DESC LIMIT 1", [k],
+                                                { (int($0, 0), text($0, 1) ?? "") }).first }
+            ?? query("SELECT id, digest FROM entries WHERE digest = ? ORDER BY copied DESC LIMIT 1", [e.digest], { (int($0, 0), text($0, 1) ?? "") }).first
+        if let (id, digest) = found {
+            run("BEGIN")
             run("UPDATE entries SET copied = ?, app = COALESCE(?, app), deleted = NULL WHERE id = ?",
                 [e.copied.timeIntervalSince1970, e.app, id])
+            if digest != e.digest {
+                run("DELETE FROM reps WHERE entry = ?", [id])
+                insertReps(id, items)
+                run("""
+                    UPDATE entries SET kind = ?, title = ?, text = ?, bytes = ?, count = ?, width = ?, height = ?, thumb = ?,
+                    digest = ?, concealed = ?, url = ?, picture = ?, ckey = ? WHERE id = ?
+                    """, [e.kind.rawValue, e.title, e.text, e.bytes, e.count, e.width, e.height, e.thumb, e.digest,
+                          e.concealed ? 1 : 0, e.url, e.picture, e.key, id])
+            }
+            run("COMMIT")
             return id
         }
         run("BEGIN")
         run("""
-            INSERT INTO entries(copied, app, kind, title, text, bytes, count, width, height, thumb, digest, concealed, url, picture)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            INSERT INTO entries(copied, app, kind, title, text, bytes, count, width, height, thumb, digest, concealed, url, picture, ckey)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, [e.copied.timeIntervalSince1970, e.app, e.kind.rawValue, e.title, e.text, e.bytes, e.count, e.width,
-                  e.height, e.thumb, e.digest, e.concealed ? 1 : 0, e.url, e.picture])
+                  e.height, e.thumb, e.digest, e.concealed ? 1 : 0, e.url, e.picture, e.key])
         let id = sqlite3_last_insert_rowid(db)
+        insertReps(id, items)
+        run("COMMIT")
+        return id
+    }
+
+    private func insertReps(_ id: Int64, _ items: [[Rep]]) {
         for (i, reps) in items.enumerated() {
             for r in reps { run("INSERT OR REPLACE INTO reps(entry, item, type, data, file) VALUES (?,?,?,?,?)", [id, i, r.type, r.data, r.file]) }
         }
+    }
+
+    /// Used: copied back from Copia (⌘C, a double click, Return, Copy as Plain Text, a drag out). The entries move to
+    /// the top with the time of use, as a copy made anywhere else does; among themselves they keep the order they had,
+    /// so ⌘A ⌘C lifts the whole list without shuffling it.
+    func touch(_ ids: [Int64], now: Date = Date()) {
+        guard !ids.isEmpty else { return }
+        let list = ids.map { "\($0)" }.joined(separator: ",")
+        let old = query("SELECT id FROM entries WHERE id IN (\(list)) ORDER BY copied ASC, id ASC", [], { int($0, 0) })
+        run("BEGIN")
+        for (i, id) in old.enumerated() {
+            // A millisecond apart: the newest keeps the top, and «now» is still now to a person.
+            run("UPDATE entries SET copied = ? WHERE id = ?", [now.timeIntervalSince1970 - Double(old.count - 1 - i) * 0.001, id])
+        }
         run("COMMIT")
-        return id
     }
 
     /// Newest first.
     func entries(deleted: Bool = false) -> [Entry] {
         query("""
-            SELECT id, copied, app, kind, title, text, bytes, count, width, height, thumb, digest, deleted, concealed, url, picture
+            SELECT id, copied, app, kind, title, text, bytes, count, width, height, thumb, digest, deleted, concealed, url, picture, ckey
             FROM entries WHERE deleted IS \(deleted ? "NOT NULL" : "NULL") ORDER BY copied DESC, id DESC
             """, []) { s in
             Entry(id: int(s, 0), copied: Date(timeIntervalSince1970: sqlite3_column_double(s, 1)), app: text(s, 2),
@@ -102,7 +166,7 @@ final class Store {
                   bytes: Int(int(s, 6)), count: Int(int(s, 7)), width: Int(int(s, 8)), height: Int(int(s, 9)),
                   thumb: text(s, 10), digest: text(s, 11) ?? "",
                   deleted: sqlite3_column_type(s, 12) == SQLITE_NULL ? nil : Date(timeIntervalSince1970: sqlite3_column_double(s, 12)),
-                  concealed: int(s, 13) != 0, url: text(s, 14), picture: text(s, 15))
+                  concealed: int(s, 13) != 0, url: text(s, 14), picture: text(s, 15), key: text(s, 16))
         }
     }
 
@@ -204,8 +268,8 @@ final class Store {
     private func refresh(_ id: Int64, from items: [[Rep]], app: String?) {
         let loaded = items.map { $0.map { Rep(type: $0.type, data: data($0)) } }
         guard let (e, _) = prepare(Snapshot(items: loaded, source: app), dir: dir) else { return }
-        run("UPDATE entries SET kind = ?, title = ?, text = ?, bytes = ?, digest = ?, url = ?, picture = ? WHERE id = ?",
-            [e.kind.rawValue, e.title, e.text, e.bytes, e.digest, e.url, e.picture, id])
+        run("UPDATE entries SET kind = ?, title = ?, text = ?, bytes = ?, digest = ?, url = ?, picture = ?, ckey = ? WHERE id = ?",
+            [e.kind.rawValue, e.title, e.text, e.bytes, e.digest, e.url, e.picture, e.key, id])
         if e.kind == .link { run("UPDATE entries SET thumb = ? WHERE id = ?", [e.thumb, id]) }
     }
 

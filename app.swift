@@ -61,6 +61,7 @@ final class App: NSObject, NSApplicationDelegate {
         panel = PanelController(store: store, monitor: monitor)
         browser = BrowserController(store: store, monitor: monitor)
         browser.panelReload = { [weak self] in self?.panel.reload() }
+        panel.afterChange = { [weak self] in if self?.browser.isVisible == true { self?.browser.reload() } }
         browser.onHotKeyChange = { [weak self] in
             guard let self, !trial else { return }
             self.unregisterHotKey()

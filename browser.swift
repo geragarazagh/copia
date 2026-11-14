@@ -364,6 +364,16 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
         guard pane != .deleted, !order.isEmpty else { return }
         let r = Copia.write(picked.map { ($0, store.reps($0.id)) }, store: store, to: pasteboard)
         monitor?.ownCount = r.count
+        used()
+    }
+
+    /// Copied back: the picked entries move to the top (Store.touch), here and in the panel; the selection stays and
+    /// stays in sight.
+    func used() {
+        store.touch(order)
+        reload()
+        content.items?.scrollToSelection()
+        panelReload()
     }
 
     @objc func copyAsPlainText(_ sender: Any?) {
@@ -375,6 +385,7 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
         it.setString("1", forType: .own)
         pasteboard.writeObjects([it])
         monitor?.ownCount = pasteboard.changeCount
+        used()
     }
 
     /// ⌘⌫: no question, into Recently Deleted; ⌘Z (Edit > Undo) brings the same items back. In Recently Deleted

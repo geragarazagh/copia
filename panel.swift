@@ -253,8 +253,20 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         guard !picked.isEmpty else { return }
         let r = Copia.write(picked.map { ($0, store.reps($0.id)) }, store: store, to: pasteboard)
         monitor?.ownCount = r.count
+        used(picked.map(\.id))
         hide()
     }
+
+    /// Copied back from here: the entries move to the top (Store.touch). The panel shows the new order the next time
+    /// it opens (it is leaving now: rows moving under its fade would be frames nobody can explain); the big window, if
+    /// open, at once.
+    func used(_ ids: [Int64]) {
+        store.touch(ids)
+        afterChange()
+    }
+
+    /// Set by the app: the big window reads the store again after a change made here.
+    var afterChange: () -> Void = {}
 
     /// ⌘⌫: no question; into Recently Deleted; the row that takes the first deleted row's place becomes the selection.
     func deleteSelection() {

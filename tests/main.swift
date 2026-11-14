@@ -10,6 +10,7 @@
 //                                   captured with screencapture -l; «motion» steps the leaving animation 20 × slower
 import AppKit
 import AVKit
+import SQLite3
 import UniformTypeIdentifiers
 
 let argv = CommandLine.arguments
@@ -409,6 +410,7 @@ func unit() {
 
     for d in [dir, fdir, ddir, sdir, pdir] { try? FileManager.default.removeItem(at: d) }
     browserTests()
+    orderTests()
     // ⌘ shortcuts whatever the layout: a Cyrillic «ф» on the A key is read as «a» (macOS 27.2: ⌘A did nothing).
     do {
         func cmd(_ ch: String, _ code: UInt16) -> NSEvent {
@@ -427,6 +429,78 @@ func unit() {
         b.frame = NSRect(x: 5, y: 5, width: 20, height: 20); check(b.frame.width > 20, "a capsule stays one after a layout")
     }
     finish("unit")
+}
+
+/// 0.5, his review of 0.4: an item copied again, from anywhere or from Copia itself, moves to the top; one entry, not twins.
+func orderTests() {
+    let dir = tmpDir("order")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+    let (st, ids) = seeded(dir, [(textSnap("alpha", app: "com.apple.Notes"), t0), (textSnap("beta"), t0.addingTimeInterval(60)),
+                                 (imageSnap(testImage("P", (0.2, 0.4, 0.8))), t0.addingTimeInterval(120)),
+                                 (Snapshot(items: [[Rep(type: furl, data: Data("file:///tmp/a.txt".utf8))], [Rep(type: furl, data: Data("file:///tmp/b.txt".utf8))]],
+                                           source: "com.apple.finder"), t0.addingTimeInterval(180))])
+    check(st.entries().map(\.id) == ids.reversed(), "newest first")
+    // The same text from Safari, now with its HTML and RTF: the same entry, on top, with Safari's richer types.
+    let rich = Snapshot(items: [[Rep(type: str, data: Data("alpha".utf8)), Rep(type: html, data: Data("<b>alpha</b>".utf8))]], source: "com.apple.Safari")
+    let (e1, it1) = prepare(rich, dir: dir, at: t0.addingTimeInterval(300))!
+    let id1 = st.add(e1, it1)
+    check(id1 == ids[0], "the same text from another app is the same entry")
+    check(st.entries().first?.id == ids[0] && st.entries().count == 4, "copied again, it moves to the top: \(st.entries().map(\.id))")
+    check(st.reps(ids[0]).first?.contains { $0.type == html } == true, "the newer copy's types replace the old ones")
+    check(st.entries().first?.app == "com.apple.Safari", "the app of the newer copy")
+    // The same picture again (another app, same pixels), the same two files again.
+    let (e2, it2) = prepare(imageSnap(testImage("P", (0.2, 0.4, 0.8)), app: "com.apple.Preview"), dir: dir, at: t0.addingTimeInterval(400))!
+    check(st.add(e2, it2) == ids[2], "the same picture is the same entry")
+    let (e3, it3) = prepare(Snapshot(items: [[Rep(type: furl, data: Data("file:///tmp/a.txt".utf8)), Rep(type: str, data: Data("a.txt".utf8))],
+                                             [Rep(type: furl, data: Data("file:///tmp/b.txt".utf8))]], source: "com.apple.finder"), dir: dir, at: t0.addingTimeInterval(500))!
+    check(st.add(e3, it3) == ids[3], "the same files are the same entry")
+    let (e4, it4) = prepare(Snapshot(items: [[Rep(type: furl, data: Data("file:///tmp/b.txt".utf8))], [Rep(type: furl, data: Data("file:///tmp/a.txt".utf8))]],
+                                     source: "com.apple.finder"), dir: dir, at: t0.addingTimeInterval(510))!
+    check(st.add(e4, it4) != ids[3], "the same files in another order are another copy")
+    check(st.entries().count == 5, "no twins: \(st.entries().count)")
+    // Copied back from Copia: the picked move to the top, keeping their order among themselves.
+    let before = st.entries().map(\.id)
+    st.touch([before[4], before[2]], now: t0.addingTimeInterval(1000))
+    let after = st.entries().map(\.id)
+    check(Array(after.prefix(2)) == [before[2], before[4]], "used entries go to the top in the order they had: \(after) from \(before)")
+    check(st.entries().first.map { abs($0.copied.timeIntervalSince1970 - (t0.timeIntervalSince1970 + 1000)) < 0.01 } == true, "the date shown is the last use")
+    st.touch(after, now: t0.addingTimeInterval(2000))
+    check(st.entries().map(\.id) == after, "⌘A ⌘C lifts the whole list without shuffling it")
+    // Recently Deleted: a copy of the same thing brings it back, to the top.
+    st.delete([ids[1]])
+    let (e5, it5) = prepare(textSnap("beta", app: "com.apple.TextEdit"), dir: dir, at: t0.addingTimeInterval(3000))!
+    check(st.add(e5, it5) == ids[1] && st.entries().first?.id == ids[1] && st.entries(deleted: true).isEmpty, "copied again, a deleted entry comes back on top")
+    // An edited text is its new text: copying the old text again makes a new entry, the edit stays.
+    st.edit(ids[1], plain: "beta, edited", rtf: nil)
+    let (e6, it6) = prepare(textSnap("beta"), dir: dir, at: t0.addingTimeInterval(3100))!
+    check(st.add(e6, it6) != ids[1], "the original text of an edited entry is a copy of its own")
+    let (e7, it7) = prepare(textSnap("beta, edited"), dir: dir, at: t0.addingTimeInterval(3200))!
+    check(st.add(e7, it7) == ids[1], "the edited text copied elsewhere and back is the edited entry")
+
+    // A store of 0.4 (version 2, no content keys) with twins opens merged: the newest copy stays, with the latest date.
+    let odir = tmpDir("order-old")
+    defer { try? FileManager.default.removeItem(at: odir) }
+    do {
+        let (o, oids) = seeded(odir, [(textSnap("same", app: "com.apple.Notes"), t0), (textSnap("other"), t0.addingTimeInterval(10))])
+        _ = o
+        _ = oids
+    }
+    var db: OpaquePointer?
+    sqlite3_open(odir.appendingPathComponent("copia.sqlite").path, &db)
+    sqlite3_exec(db, """
+        INSERT INTO entries(copied, app, kind, title, text, bytes, count, width, height, thumb, digest, concealed)
+          SELECT copied + 100, 'com.apple.Safari', kind, title, text, bytes, count, width, height, thumb, 'twin', concealed FROM entries WHERE text = 'same';
+        INSERT INTO reps(entry, item, type, data, file) SELECT (SELECT MAX(id) FROM entries), item, type, data, file FROM reps
+          WHERE entry = (SELECT id FROM entries WHERE text = 'same' AND digest != 'twin');
+        UPDATE entries SET ckey = NULL; PRAGMA user_version = 2;
+        """, nil, nil, nil)
+    sqlite3_close(db)
+    let o2 = try! Store(dir: odir)
+    let left = o2.entries()
+    check(left.count == 2 && left.filter { $0.text == "same" }.count == 1, "0.4's twins merged on opening: \(left.map(\.text))")
+    check(left.first?.text == "same" && left.first?.app == "com.apple.Safari", "the newest twin stays, on top")
+    check(left.allSatisfy { $0.key != nil }, "every kept entry has its content key")
 }
 
 /// The big window's logic without a screen: panes, sort, the pick order, delete, Recently Deleted, the hot key text.

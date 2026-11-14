@@ -40,6 +40,9 @@ struct Entry: Equatable {
     var concealed = false
     var url: String?          // a link's address when it is not the text itself (a link selected on a page)
     var picture: String?      // images/<sha>.<ext>: the page's picture a link carried (Safari's og:image)
+    /// What makes two copies the same thing to a person (contentKey): the same text from Safari and from Notes, the
+    /// same picture, the same files. Copied again, the entry moves to the top instead of making a twin.
+    var key: String?
 
     /// A link's address: its own field, or the text that is the address.
     var address: String { url ?? text.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -126,12 +129,13 @@ func prepare(_ s: Snapshot, dir: URL, at date: Date = Date()) -> (Entry, [[Rep]]
     guard items.contains(where: { !$0.isEmpty }) else { return nil }
 
     let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    let key = contentKey(items) { r in r.data ?? r.file.flatMap { try? Data(contentsOf: dir.appendingPathComponent($0)) } }
     let strs = s.items.compactMap { item in item.first { $0.type == NSPasteboard.PasteboardType.string.rawValue }?.data
         .flatMap { String(data: $0, encoding: .utf8) } }
     let files = s.items.compactMap { item in item.first { $0.type == NSPasteboard.PasteboardType.fileURL.rawValue }?.data
         .flatMap { String(data: $0, encoding: .utf8) }.flatMap { URL(string: $0) } }
     var e = Entry(copied: date, app: s.source, kind: .other, title: "", text: "", bytes: 0, count: s.items.count,
-                  digest: digest, concealed: s.concealed)
+                  digest: digest, concealed: s.concealed, key: key)
     if !files.isEmpty {
         e.kind = .files
         e.count = files.count
@@ -170,6 +174,26 @@ func prepare(_ s: Snapshot, dir: URL, at date: Date = Date()) -> (Entry, [[Rep]]
         e.bytes = items.flatMap { $0 }.reduce(0) { $0 + ($1.data?.count ?? 0) }
     }
     return (e, items)
+}
+
+/// What a person would call the same copy, so copying it again moves it to the top (Maccy does the same with its
+/// «supersedes»: the new copy's types all found in an old one). The digest alone was too strict: it hashes every type
+/// the copying app wrote, so the same text from Safari (with HTML and RTF) and from Notes, or the same link copied twice
+/// from Chrome (which writes a fresh source id each time), made twins. The key is the content a paste gives:
+/// - files: their addresses, in order (twelve Finder files copied again are the same twelve);
+/// - pictures (no files): their PNG files, already named by their SHA-256;
+/// - text, links, colours: the plain text, hashed;
+/// nil for anything else, which then matches by the digest as before.
+func contentKey(_ items: [[Rep]], data: (Rep) -> Data?) -> String? {
+    let furl = NSPasteboard.PasteboardType.fileURL.rawValue, png = NSPasteboard.PasteboardType.png.rawValue
+    let plain = NSPasteboard.PasteboardType.string.rawValue
+    let files = items.compactMap { $0.first { $0.type == furl }.flatMap(data).flatMap { String(data: $0, encoding: .utf8) } }
+    if !files.isEmpty { return "f:" + sha(Data(files.joined(separator: "\n").utf8)) }
+    let pics = items.compactMap { $0.first { $0.type == png }?.file }
+    if !pics.isEmpty { return "i:" + pics.joined(separator: ",") }
+    let texts = items.compactMap { $0.first { $0.type == plain }.flatMap(data).flatMap { String(data: $0, encoding: .utf8) } }
+    if !texts.isEmpty { return "t:" + sha(Data(texts.joined(separator: "\n").utf8)) }
+    return nil
 }
 
 /// The first 300 characters with line breaks and runs of spaces folded: enough for two lines of a row and never
