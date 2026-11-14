@@ -44,7 +44,7 @@ final class EntryCell: NSTableCellView {
         twoLines = e.kind == .text
         title.font = .systemFont(ofSize: 14, weight: twoLines ? .regular : .medium)
         title.maximumNumberOfLines = twoLines ? 2 : 1
-        title.stringValue = e.title
+        title.stringValue = shownTitle(e)
         meta.stringValue = metaText(e)
         layoutText()
     }

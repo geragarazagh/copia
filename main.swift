@@ -4,6 +4,11 @@
 //
 //   --data DIR       keep the history in DIR instead (tests and trials)
 //   --quit-after S   quit by itself after S seconds (a trial on a real screen must end without a person)
+// Trial flags (Claude's checks on a virtual display of its own, never on the person's screen):
+//   --display ID     windows open on the screen of this CGDirectDisplayID instead of the one with the pointer
+//   --show           open the panel at launch; --browser [PANE] opens the big window (all, text, …, settings)
+//   --trial          no hot key, no clipboard watching, no login item change: nothing that touches the person's Mac
+//   --appearance light|dark
 import AppKit
 
 let args = CommandLine.arguments
@@ -14,6 +19,8 @@ if let me = Bundle.main.bundleIdentifier,
    NSRunningApplication.runningApplications(withBundleIdentifier: me).contains(where: { $0 != .current }) {
     exit(0)
 }
+
+if let a = arg("--appearance") { NSApplication.shared.appearance = NSAppearance(named: a == "dark" ? .darkAqua : .aqua) }
 
 let dataDir = arg("--data").map { URL(fileURLWithPath: $0) }
     ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/share/clip")

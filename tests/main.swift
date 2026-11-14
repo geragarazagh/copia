@@ -69,6 +69,13 @@ func imageSnap(_ d: Data, app: String? = "com.geragaraza.pixlift") -> Snapshot {
 // MARK: unit
 
 func unit() {
+    // Titles the app makes up are made when shown, in the interface language, whatever the store holds.
+    do {
+        let e = Entry(copied: Date(), app: nil, kind: .image, title: "3 objects", text: "", bytes: 1, count: 3, digest: "x")
+        check(shownTitle(e) == counted(3, "object|objects"), "a several-image title is made when shown")
+        var f = e; f.kind = .text; f.title = "hello"
+        check(shownTitle(f) == "hello", "a text's title is its own")
+    }
     // Selection, Finder's way plus the order.
     var s = Selection()
     let list: [Int64] = [10, 9, 8, 7, 6, 5]   // newest first, as shown
@@ -605,13 +612,9 @@ func general() {
 
 // MARK: render
 
-/// The approved mockup's content, through the real capture path, into a store; the panel drawn over a desktop
-/// picture in one window under the desktop (never seen), captured with screencapture -l.
-func render(app: String, theme: String, out: String, mode: String) {
-    let motion = mode == "motion"
-    strings = Bundle(path: app)!
+/// The approved mockup's content (round 3), newest last; the panel's renders and the trials' seed use it.
+func mockSpecs() -> [(Snapshot, Date)] {
     let res = "/Users/harazha/.local/share/clipboard/mock/res/"
-    let dir = tmpDir("render")
     let day = Calendar.current.startOfDay(for: Date())
     func at(_ h: Int, _ m: Int, _ d: Int = 0) -> Date { day.addingTimeInterval(Double(d * 86400 + h * 3600 + m * 60)) }
     func txt(_ n: String) -> String { ((try? String(contentsOfFile: res + "text/\(n).txt", encoding: .utf8)) ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -621,7 +624,7 @@ func render(app: String, theme: String, out: String, mode: String) {
     let link = Snapshot(items: [[Rep(type: str, data: Data("https://geragaraza.com".utf8)), Rep(type: "public.url", data: Data("https://geragaraza.com".utf8)),
                                  Rep(type: "public.url-name", data: Data("Herman Harazha".utf8))]], source: "com.apple.Safari")
     func files(_ u: [URL], _ app: String) -> Snapshot { Snapshot(items: u.map { [Rep(type: furl, data: Data($0.absoluteString.utf8))] }, source: app) }
-    let specs: [(Snapshot, Date)] = [
+    return [
         (imageSnap(shot("2026-11-13 18-47-05.png"), app: "com.geragaraza.pixlift"), at(18, 47, -1)),
         (textSnap(txt("karenina"), app: "com.apple.iBooksX"), at(19, 12, -1)),
         (imageSnap(shot("2026-11-14 07-11-29.png")), at(7, 11)),
@@ -639,9 +642,22 @@ func render(app: String, theme: String, out: String, mode: String) {
         (Snapshot(items: [[Rep(type: png, data: shot("2026-11-14 07-11-29.png"))], [Rep(type: png, data: shot("2026-11-13 18-47-05.png"))],
                           [Rep(type: png, data: shot("2026-11-14 07-34-26.png"))]], source: "com.apple.Safari"), at(7, 36)),
         (files([URL(fileURLWithPath: res + "img_Mac_Blue-0.jpg"), URL(fileURLWithPath: res + "img_iMac_Orange-0.jpg")], "com.apple.finder"), at(7, 37)),
+        (files([URL(fileURLWithPath: res + "answer.m4a")], "com.apple.finder"), at(7, 38)),
+        (textSnap("#34C759", app: "com.apple.DigitalColorMeter"), at(7, 39, -2)),
     ]
+}
+
+
+/// The approved mockup's content, through the real capture path, into a store; the panel drawn over a desktop
+/// picture in one window under the desktop (never seen), captured with screencapture -l.
+func render(app: String, theme: String, out: String, mode: String) {
+    let motion = mode == "motion"
+    strings = Bundle(path: app)!
+    let res = "/Users/harazha/.local/share/clipboard/mock/res/"
+    let dir = tmpDir("render")
+    let specs = mockSpecs()
     let few = mode == "few", empty = mode == "empty"
-    let (st, ids) = seeded(dir, empty ? [] : few ? Array(specs.suffix(3)) : specs)
+    let (st, ids) = seeded(dir, empty ? [] : few ? Array(specs.prefix(15).suffix(3)) : specs)
     let pc = PanelController(store: st, monitor: nil, onScreen: false)
     pc.forceFocus = true
     // Picked in the mockup's order: the dictated message, page A, page C, the screenshot.
@@ -750,6 +766,8 @@ case "general": general(); finish("general")
 case "readtiff" where argv.count == 3:   // copy's helper: another process asking for the TIFF
     let d = NSPasteboard(name: .init(argv[2])).pasteboardItems?.first?.data(forType: .tiff)
     print(d.flatMap { NSBitmapImageRep(data: $0) }?.pixelsWide ?? 0); exit(0)
+case "seed" where argv.count == 3:   // the mockup's content into a data folder, for a trial run of the app
+    _ = seeded(URL(fileURLWithPath: argv[2]), mockSpecs()); exit(0)
 case "render" where argv.count >= 5: render(app: argv[2], theme: argv[3], out: argv[4], mode: argv.count > 5 ? argv[5] : "")
 default:
     print("usage: clip-tests unit | capture | copy | general | render APP THEME OUT [motion]"); exit(2)

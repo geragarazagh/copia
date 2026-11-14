@@ -238,6 +238,18 @@ struct Facts {
     }
 }
 
+/// The title a row or an icon shows. Words the app makes up itself («Image», «3 objects», «Data») are made in the
+/// interface language when shown, not taken from the store, where they stay in the language of the day of the copy
+/// (a test machine in English showed «2 objects» in a Russian panel, 2026-11-14).
+func shownTitle(_ e: Entry) -> String {
+    switch e.kind {
+    case .image: return e.count == 1 ? L("Image") : counted(e.count, "object|objects")
+    case .files where e.count > 1: return counted(e.count, "object|objects")
+    case .other: return L("Data")
+    default: return e.title
+    }
+}
+
 func kindLabel(_ e: Entry) -> String {
     switch e.kind {
     case .text: L("Text")

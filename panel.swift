@@ -11,8 +11,11 @@ import AppKit
 /// The width, and the tallest the panel gets (the approved mockup's size).
 let panelSize = NSSize(width: 760, height: 720)
 let panelCorner: CGFloat = 22
-/// Room around the panel inside its window, so the 3 % growth of the leaving animation is not cut by the window edge.
-let panelMargin: CGFloat = 16
+/// Room around the panel inside its window: the glass's own shadow and the 3 % growth of the leaving animation must
+/// end inside the window. At 16 pt the window's edge cut the shadow where it was still 6 levels dark under the panel,
+/// a faint straight-edged box on a light wallpaper (measured in a test machine, 2026-11-14); the shadow fades out by
+/// about 45 pt below the glass.
+let panelMargin: CGFloat = 64
 /// Space kept between the panel and the edges of the screen's visible frame. Spotlight's top sits 6 pt under the menu
 /// bar (measured: y 38 on this Mac's 32 pt menu bar); the bottom keeps the same.
 let screenGap: CGFloat = 6
@@ -316,6 +319,10 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     func keyEquivalent(_ e: NSEvent) -> Bool {
         let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.capsLock, .numericPad, .function])
         guard mods.contains(.command) else { return false }
+        // AppKit offers a key equivalent to every window of the app, the key one first: while the preview's text has
+        // the keys, ⌘A and ⌘C belong to that text, never to the list behind it (a test machine run, 2026-11-14: ⌘A ⌘C
+        // in the preview copied the whole history and hid the panel).
+        if let k = NSApp.keyWindow, k !== window { return false }
         let key = e.charactersIgnoringModifiers?.lowercased() ?? ""
         let editor = window?.fieldEditor(false, for: view.field) as? NSTextView
         switch (key, mods) {
@@ -368,7 +375,7 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         // On the screen with the pointer, centred across its visible frame (what the menu bar and the Dock leave), at
         // the place the person chose for that screen: the middle by default, his pick «посередине».
         let mouse = NSEvent.mouseLocation
-        screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
+        screen = trialScreen() ?? NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
         sizeTicker.stop(); settleTicker.stop()
         dragX = 0
         let h = contentHeight()
@@ -525,7 +532,8 @@ final class Panel: NSPanel {
         isReleasedWhenClosed = false
         animationBehavior = .none   // the motion is our own, timed as Apple's
         collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary, .transient, .ignoresCycle]
-        let root = Flipped(frame: NSRect(origin: .zero, size: size))
+        let root = Margin(frame: NSRect(origin: .zero, size: size))
+        root.owner = { [weak self] in self?.owner }
         view.frame.origin = NSPoint(x: panelMargin, y: panelMargin)
         root.addSubview(view)
         contentView = root
@@ -542,6 +550,9 @@ final class Panel: NSPanel {
 
     /// Space: the preview, when something is picked and the person is not typing a search (then it is a space).
     override func sendEvent(_ e: NSEvent) {
+        if traceEvents, [.keyDown, .leftMouseDown].contains(e.type) {
+            FileHandle.standardError.write(Data("panel \(e.type.rawValue) key=\(isKeyWindow) code=\(e.type == .keyDown ? Int(e.keyCode) : -1)\n".utf8))
+        }
         if e.type == .keyDown, e.keyCode == 49, e.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
            let o = owner, o.spaceOpensPreview {
             o.togglePreview()
@@ -549,6 +560,13 @@ final class Panel: NSPanel {
         }
         super.sendEvent(e)
     }
+}
+
+/// The window's room around the glass, where its shadow lies: a click there is a click outside the panel.
+final class Margin: NSView {
+    var owner: () -> PanelController? = { nil }
+    override var isFlipped: Bool { true }
+    override func mouseDown(with e: NSEvent) { owner()?.hide() }
 }
 
 // MARK: the view

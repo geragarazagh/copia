@@ -182,7 +182,7 @@ final class PreviewController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         var r = NSRect(x: panelRect.midX - previewWidth / 2, y: panelRect.midY - h / 2, width: previewWidth, height: h)
         if r.maxY > screen.maxY - 20 { r.origin.y = screen.maxY - 20 - h }
         if r.minY < screen.minY + 20 { r.origin.y = screen.minY + 20 }
-        let frame = (from.map { r.union($0) } ?? r).insetBy(dx: -40, dy: -40)
+        let frame = (from.map { r.union($0) } ?? r).insetBy(dx: -panelMargin, dy: -panelMargin)   // room for the glass shadow, as the panel
         if let host {
             if box.superview !== host { host.addSubview(box) }
             hostOrigin = frame.origin
@@ -446,13 +446,36 @@ final class PreviewWindow: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
+    override func sendEvent(_ e: NSEvent) {
+        if traceEvents, [.keyDown, .leftMouseDown].contains(e.type) {
+            FileHandle.standardError.write(Data("preview \(e.type.rawValue) key=\(isKeyWindow) fr=\(String(describing: firstResponder.map { type(of: $0) }))\n".utf8))
+        }
+        // The first click into the text puts the caret there at once, as in Spotlight's own field: AppKit would spend
+        // it on making the window key (NSTextView takes no first mouse), so the person had to click twice (a test
+        // machine run, 2026-11-14).
+        if e.type == .leftMouseDown, !isKeyWindow { makeKey() }
+        super.sendEvent(e)
+    }
+
     override func performKeyEquivalent(with e: NSEvent) -> Bool {
         let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.capsLock, .numericPad, .function])
         switch (e.charactersIgnoringModifiers?.lowercased(), mods) {
         case ("b", [.command]): owner?.toggle(.boldFontMask); return true
         case ("i", [.command]): owner?.toggle(.italicFontMask); return true
+        default: break
+        }
+        // The text's own editing keys, as an Edit menu would give them (the app has no menu bar to carry them).
+        guard isKeyWindow, let tv = firstResponder as? NSTextView else { return super.performKeyEquivalent(with: e) }
+        switch (e.charactersIgnoringModifiers?.lowercased(), mods) {
+        case ("a", [.command]): tv.selectAll(nil)
+        case ("c", [.command]): tv.copy(nil)
+        case ("x", [.command]): tv.cut(nil)
+        case ("v", [.command]): tv.paste(nil)
+        case ("z", [.command]): tv.undoManager?.undo()
+        case ("z", [.command, .shift]): tv.undoManager?.redo()
         default: return super.performKeyEquivalent(with: e)
         }
+        return true
     }
 
     // Esc while editing: the edit is kept and the preview closes into its row; the panel takes the keys again.

@@ -3,6 +3,20 @@
 import AppKit
 import Carbon.HIToolbox
 
+/// Trial flags (main.swift lists them): here, since the tests build every file but main.swift.
+let trial = CommandLine.arguments.contains("--trial")
+let trialDisplay: UInt32? = CommandLine.arguments.firstIndex(of: "--display").flatMap {
+    $0 + 1 < CommandLine.arguments.count ? UInt32(CommandLine.arguments[$0 + 1]) : nil }
+
+/// CLIP_TRACE=1: every key and click a window of the app gets, on stderr (trials).
+let traceEvents = ProcessInfo.processInfo.environment["CLIP_TRACE"] != nil
+
+/// The screen of the trial display, when one is given.
+func trialScreen() -> NSScreen? {
+    guard let id = trialDisplay else { return nil }
+    return NSScreen.screens.first { ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == id }
+}
+
 /// The Carbon hot key's callback is a C function: it reaches the app through this.
 nonisolated(unsafe) var hotKeyAction: (() -> Void)?
 
@@ -21,6 +35,12 @@ final class App: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ n: Notification) {
+        // A trial names its own screen; should that screen be gone, nothing may open on another one (2026-11-14:
+        // a trial's virtual display vanished mid-run and the panel opened on the person's screen for 3 s).
+        if trialDisplay != nil && trialScreen() == nil {
+            FileHandle.standardError.write(Data("No display \(trialDisplay!): not opening anything\n".utf8))
+            exit(3)
+        }
         Clip.cleanPasteFolder(store, all: true)
         store.purge()
         panel = PanelController(store: store, monitor: monitor)
@@ -48,10 +68,11 @@ final class App: NSObject, NSApplicationDelegate {
                 }
             }
         }
-        monitor.start()
+        if !trial { monitor.start() }
 
         hotKeyAction = { [weak self] in self?.panel.toggle() }
-        registerHotKey()
+        if !trial { registerHotKey() }
+        if CommandLine.arguments.contains("--show") { panel.show() }
 
         // Every hour: what the keep-history setting and Recently Deleted let go, and paste files older than a day.
         housekeeping = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
