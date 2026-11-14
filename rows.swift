@@ -52,7 +52,9 @@ final class EntryCell: NSTableCellView {
 
     private func layoutText() {
         let x = listInset + 12 + 40 + 12
-        let w = appIcon.frame.minX - 8 - x
+        // The text ends under the Space preview's edge, so no «…» of a row peeks out beside the open preview (seen on
+        // macOS 27.2, 2026-11-14: the last 10 pt of long titles showed between the preview and the app icons).
+        let w = min(appIcon.frame.minX - 8, (panelSize.width + previewWidth) / 2 - 4) - x
         let lineH: CGFloat = 17
         let th = twoLines ? min(2 * lineH, title.sizeThatFits(NSSize(width: w, height: 100)).height) : lineH
         let mh: CGFloat = 15, gap: CGFloat = 2
