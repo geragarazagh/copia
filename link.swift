@@ -138,3 +138,17 @@ func keepPicture(_ d: Data, dir: URL) -> String? {
     if !FileManager.default.fileExists(atPath: url.path) { try? d.write(to: url, options: .atomic) }
     return name
 }
+
+/// Apple's own link card, LPLinkView, as Messages, Notes and the share sheet draw a link: the page's picture at its
+/// own aspect over a caption tinted from it, with the title and the site. Made from the archived LPLinkMetadata the
+/// copying app put on the pasteboard (kept with the entry for pasting), so it holds the picture's bytes and size and
+/// draws in the first frame; LPLinkView itself never loads anything (drawn with the network denied, 2026-11-14). Shown
+/// at Apple's own size, its intrinsicContentSize: 350 pt wide for github.com, the picture 1.91 : 1 under a caption of
+/// 44-56 pt. Only for a link that carried a picture: one with an icon alone stays its text, as before.
+func linkCard(_ e: Entry, store: Store) -> LPLinkView? {
+    guard e.kind == .link, e.picture != nil,
+          let r = store.reps(e.id).first?.first(where: { $0.type == NSPasteboard.PasteboardType.linkMetadata.rawValue }),
+          let d = store.data(r),
+          let m = try? NSKeyedUnarchiver.unarchivedObject(ofClass: LPLinkMetadata.self, from: d) else { return nil }
+    return LPLinkView(metadata: m)
+}

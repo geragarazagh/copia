@@ -24,6 +24,8 @@ final class PreviewController: NSObject, NSTextViewDelegate, NSWindowDelegate {
     private var textView: NSTextView?
     private var textScroll: NSScrollView?
     private var quickLook: QLPreviewView?
+    private var card: NSView?            // a link's own card (link.swift), at Apple's size
+    static let cardInset: CGFloat = 20
     private let facts = NSTextField(labelWithString: "")
     private let revert = NSButton(title: L("Revert to Original"), target: nil, action: nil)
     private let ticker = Ticker()
@@ -220,6 +222,7 @@ final class PreviewController: NSObject, NSTextViewDelegate, NSWindowDelegate {
 
     private func idealHeight() -> CGFloat {
         guard let e = entry else { return 300 }
+        if let c = card { return max(140, min(560, c.frame.height + 2 * Self.cardInset + previewFooter)) }
         if let tv = textView, let lm = tv.layoutManager, let tc = tv.textContainer {
             lm.ensureLayout(for: tc)
             let used = lm.usedRect(for: tc).height + 2 * tv.textContainerInset.height
@@ -238,11 +241,15 @@ final class PreviewController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         entry = e
         edited = false
         for v in content.subviews { v.removeFromSuperview() }
-        textView = nil; textScroll = nil
+        textView = nil; textScroll = nil; card = nil
         quickLook?.close(); quickLook = nil
         let size = NSSize(width: previewWidth, height: 400)
         content.frame = NSRect(origin: .zero, size: size)
-        if [.text, .link, .color].contains(e.kind) || (e.kind == .other && !e.text.isEmpty) {
+        if let c = linkCard(e, store: store) {
+            c.frame.size = c.intrinsicContentSize
+            content.addSubview(c)
+            card = c
+        } else if [.text, .link, .color].contains(e.kind) || (e.kind == .other && !e.text.isEmpty) {
             let sv = NSTextView.scrollableTextView()
             let tv = sv.documentView as! NSTextView
             sv.drawsBackground = false
@@ -284,6 +291,7 @@ final class PreviewController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         let main = NSRect(x: 0, y: 0, width: w, height: max(0, h - previewFooter))
         textScroll?.frame = main
         quickLook?.frame = main
+        if let c = card { c.frame.origin = NSPoint(x: ((w - c.frame.width) / 2).rounded(), y: ((main.height - c.frame.height) / 2).rounded()) }
         footLine.frame = NSRect(x: 0, y: h - previewFooter, width: w, height: 1)
         let rw = revert.frame.width
         revert.frame.origin = NSPoint(x: w - 12 - rw, y: h - previewFooter + (previewFooter - revert.frame.height) / 2)
@@ -321,6 +329,7 @@ final class PreviewController: NSObject, NSTextViewDelegate, NSWindowDelegate {
                      "≈\u{00A0}" + counted(Int(tokenEstimate(t).rounded()), "token|tokens"), sizeText(t.utf8.count)]
         } else {
             parts = [kindLabel(e)]
+            if card != nil { parts.append(e.address) }   // the card names only the site; the whole address here
             if e.width > 0 { parts += ["\(e.width) × \(e.height)", "≈\u{00A0}" + counted(Int(imageTokens(e.width, e.height).rounded()), "token|tokens")] }
             if e.bytes > 0 { parts.append(sizeText(e.bytes)) }
         }

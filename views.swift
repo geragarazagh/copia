@@ -708,6 +708,17 @@ final class GalleryView: NSObject, ItemsView, NSCollectionViewDataSource, NSColl
         guard let e else { return }
         let v: NSView
         switch e.kind {
+        case .link where linkCard(e, store: o.store) != nil:
+            // The link's own card at Apple's size, in the middle of the stage (link.swift).
+            let c = linkCard(e, store: o.store)!
+            c.frame.size = c.intrinsicContentSize
+            let holder = FlippedLayout()
+            holder.addSubview(c)
+            holder.onLayout = { [weak holder] in
+                guard let h = holder else { return }
+                c.frame.origin = NSPoint(x: ((h.bounds.width - c.frame.width) / 2).rounded(), y: ((h.bounds.height - c.frame.height) / 2).rounded())
+            }
+            v = holder
         case .text, .link, .other:
             let sv = NSTextView.scrollableTextView()
             let tv = sv.documentView as! NSTextView
