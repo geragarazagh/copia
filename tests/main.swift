@@ -987,7 +987,11 @@ func linkTests() {
     let specs = linkSpecs(pb)
     let (st, ids) = seeded(dir, specs)
     let byId = Dictionary(uniqueKeysWithValues: st.entries().map { ($0.id, $0) })
-    let para = byId[ids[0]]!, notes = byId[ids[1]]!, sel = byId[ids[2]]!, copyLink = byId[ids[3]]!, bar = byId[ids[4]]!
+    let para = byId[ids[0]]!, sel = byId[ids[2]]!, copyLink = byId[ids[3]]!, bar = byId[ids[4]]!
+    // Notes' copy and Safari's address bar are the same link (https://github.com): one entry, the newer copy's title
+    // (0.5's content key). The Notes copy alone is read as prepared, before the store.
+    check(ids[1] == ids[4] && st.entries().count == 4, "the same link from Notes and from Safari is one entry, Safari's newer copy on top")
+    let notes = prepare(specs[1].0, dir: dir)!.0
 
     // Safari's address bar: the title and both pictures from the archived LPLinkMetadata, no network.
     check(bar.kind == .link, "address bar: a link (\(bar.kind))")
@@ -1179,6 +1183,13 @@ case "copy":
 case "general": general(); finish("general")
 case "links": linkTests(); finish("links")
 case "qlcrash": qlCrash(); finish("qlcrash")
+case "write" where argv.count >= 3:   // another app copying: TEXT on the general pasteboard, with HTML too when asked
+    let pb = NSPasteboard.general
+    pb.clearContents()
+    let it = NSPasteboardItem()
+    it.setString(argv[2], forType: .string)
+    if argv.count > 3 { it.setString("<b>\(argv[2])</b>", forType: .html) }
+    pb.writeObjects([it]); exit(0)
 case "screen": qlCrash(); panelOnScreen(); finish("screen")
 case "readtiff" where argv.count == 3:   // copy's helper: another process asking for the TIFF
     let d = NSPasteboard(name: .init(argv[2])).pasteboardItems?.first?.data(forType: .tiff)
