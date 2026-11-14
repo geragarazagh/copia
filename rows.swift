@@ -98,22 +98,31 @@ func metaText(_ e: Entry) -> String {
     return p.joined(separator: " · ")
 }
 
-/// The order badge: an accent circle, a white digit, a thin white ring that keeps it readable on an accent row.
+/// The order badge: an accent circle, a white digit, a thin white ring that keeps it readable on an accent row. From
+/// 10 on it grows into a capsule to the right, its left edge and height kept, as Apple's count badges do (on 27.2 a
+/// ⌘A of 22 entries drew «22» touching the ring, 2026-11-14).
 final class Badge: NSView {
-    var number: Int? { didSet { needsDisplay = true } }
-    override func draw(_ r: NSRect) {
-        guard let n = number else { return }
-        let c = bounds.insetBy(dx: 0.75, dy: 0.75)
-        NSColor.controlAccentColor.setFill()
-        NSBezierPath(ovalIn: c).fill()
-        NSColor.white.setStroke()
-        let ring = NSBezierPath(ovalIn: c)
-        ring.lineWidth = 1.5
-        ring.stroke()
-        let size = bounds.height * 0.58
+    var number: Int? { didSet { needsDisplay = true; setFrameSize(frame.size) } }
+    private func label(_ h: CGFloat) -> NSAttributedString {
+        let size = h * 0.58
         var font = NSFont.systemFont(ofSize: size, weight: .bold)
         if let d = font.fontDescriptor.withDesign(.rounded) { font = NSFont(descriptor: d, size: size) ?? font }
-        let s = NSAttributedString(string: String(n), attributes: [.font: font, .foregroundColor: NSColor.white])
+        return NSAttributedString(string: number.map(String.init) ?? "", attributes: [.font: font, .foregroundColor: NSColor.white])
+    }
+    override func setFrameSize(_ s: NSSize) {
+        let w = (number ?? 0) < 10 ? s.height : max(s.height, (label(s.height).size().width + s.height * 0.6).rounded(.up))
+        super.setFrameSize(NSSize(width: w, height: s.height))
+    }
+    override func draw(_ r: NSRect) {
+        guard number != nil else { return }
+        let c = bounds.insetBy(dx: 0.75, dy: 0.75)
+        let shape = NSBezierPath(roundedRect: c, xRadius: c.height / 2, yRadius: c.height / 2)
+        NSColor.controlAccentColor.setFill()
+        shape.fill()
+        NSColor.white.setStroke()
+        shape.lineWidth = 1.5
+        shape.stroke()
+        let s = label(bounds.height)
         let z = s.size()
         s.draw(at: NSPoint(x: bounds.midX - z.width / 2, y: bounds.midY - z.height / 2))
     }
