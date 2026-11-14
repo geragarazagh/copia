@@ -408,6 +408,23 @@ func unit() {
 
     for d in [dir, fdir, ddir, sdir, pdir] { try? FileManager.default.removeItem(at: d) }
     browserTests()
+    // ⌘ shortcuts whatever the layout: a Cyrillic «ф» on the A key is read as «a» (macOS 27.2: ⌘A did nothing).
+    do {
+        func cmd(_ ch: String, _ code: UInt16) -> NSEvent {
+            NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0, windowNumber: 0, context: nil,
+                             characters: ch, charactersIgnoringModifiers: ch, isARepeat: false, keyCode: code)!
+        }
+        check(shortcutKey(cmd("ф", 0)) == "a", "⌘ф reads as ⌘A (\(shortcutKey(cmd("ф", 0))))")
+        check(shortcutKey(cmd("с", 8)) == "c", "⌘с reads as ⌘C")
+        check(shortcutKey(cmd("a", 0)) == "a" && shortcutKey(cmd(",", 43)) == ",", "Latin keys stay as they are")
+    }
+    // Order badges: a circle up to 9, a capsule from 10, the left edge and the height kept.
+    do {
+        let b = Badge(frame: NSRect(x: 5, y: 5, width: 20, height: 20))
+        b.number = 7; check(b.frame.width == 20, "badge 7 is a circle")
+        b.number = 22; check(b.frame.width > 20 && b.frame.minX == 5 && b.frame.height == 20, "badge 22 is a capsule (\(b.frame))")
+        b.frame = NSRect(x: 5, y: 5, width: 20, height: 20); check(b.frame.width > 20, "a capsule stays one after a layout")
+    }
     finish("unit")
 }
 
@@ -889,6 +906,12 @@ func linkTests() {
     check(htmlLink("<a href=\"https://a.com/\">a.com</a>", "a.com") == LinkInfo(url: "https://a.com/", title: nil),
           "a link whose text is its address: no title")
     check(sameAddress("https://www.github.com/", "github.com") && !sameAddress("github.com/a", "github.com"), "sameAddress")
+
+    // Apple's link card for a link that carried a picture, at Apple's own size; none for one without.
+    let card = linkCard(bar, store: st)
+    check(card != nil && card!.intrinsicContentSize.width == 350 && card!.intrinsicContentSize.height > 200,
+          "address bar: Apple's link card at its own size (\(String(describing: card?.intrinsicContentSize)))")
+    check(linkCard(copyLink, store: st) == nil && linkCard(para, store: st) == nil, "no card without a picture")
 
     // Two pictures per link, so the purge must keep them while the entry lives and drop them after.
     let files = [bar.thumb!, bar.picture!].map { dir.appendingPathComponent($0) }

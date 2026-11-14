@@ -17,6 +17,11 @@ func trialScreen() -> NSScreen? {
     return NSScreen.screens.first { ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == id }
 }
 
+/// Where a trial's mouse is (screen points), set by the trial's own events (App.listenForTrialMouse): the session's
+/// real pointer does not move with them. Nil outside trials.
+nonisolated(unsafe) var trialPointer: NSPoint?
+nonisolated(unsafe) var trialDown: (Int, NSPoint)?
+
 /// The Carbon hot key's callback is a C function: it reaches the app through this.
 nonisolated(unsafe) var hotKeyAction: (() -> Void)?
 
@@ -83,6 +88,7 @@ final class App: NSObject, NSApplicationDelegate {
             }
         }
         if !trial { monitor.start() }
+        if trial { listenForTrialMouse() }
 
         hotKeyAction = { [weak self] in self?.panel.toggle() }
         if !trial { registerHotKey() }
@@ -126,6 +132,56 @@ final class App: NSObject, NSApplicationDelegate {
         let id = EventHotKeyID(signature: OSType(0x434C_4950), id: 1)   // 'CLIP'
         let k = store.hotKey
         return RegisterEventHotKey(k.code, k.mods, id, GetApplicationEventTarget(), 0, &hotKey)
+    }
+
+    /// Trials in the agents' own login session (cs): mouse events posted to a process from outside are not routed to
+    /// its windows (measured on 27.2, 2026-11-14), so a trial writes lines «down|up|drag|rdown|rup|move X Y» (screen
+    /// points, top-left origin) into the FIFO trial-mouse in the data folder, and the app posts each event into its own
+    /// queue, where it takes the same path as a real one (hit testing, context menus, the drag's tracking loop). Read
+    /// on a thread of its own: a run-loop source would wait while a tracking loop runs. Only with --trial.
+    private func listenForTrialMouse() {
+        let fifo = store.dir.appendingPathComponent("trial-mouse").path
+        unlink(fifo)
+        guard mkfifo(fifo, 0o600) == 0 else { return }
+        let top = NSScreen.screens.first?.frame.maxY ?? 0   // here: the reading thread must never wait for the main one mid-drag
+        Thread.detachNewThread {
+            let types: [Substring: NSEvent.EventType] = ["down": .leftMouseDown, "up": .leftMouseUp, "drag": .leftMouseDragged,
+                                                         "rdown": .rightMouseDown, "rup": .rightMouseUp, "move": .mouseMoved]
+            while let h = FileHandle(forReadingAtPath: fifo) {
+                let text = String(decoding: h.readDataToEndOfFile(), as: UTF8.self)
+                h.closeFile()
+                for line in text.split(separator: "\n") {
+                    let f = line.split(separator: " ")
+                    guard f.count == 3, let t = types[f[0]], let x = Double(f[1]), let y = Double(f[2]) else { continue }
+                    let p = NSPoint(x: x, y: top - y)
+                    trialPointer = p
+                    if t == .leftMouseDragged || t == .leftMouseUp {
+                        // Straight from this thread (postEvent may be called from any thread): the main thread may be
+                        // inside the drag's tracking loop, which does not run the main queue. A drag keeps going to the
+                        // window it started in, as the window server does.
+                        guard let (n, o) = trialDown, let e = NSEvent.mouseEvent(
+                            with: t, location: NSPoint(x: p.x - o.x, y: p.y - o.y), modifierFlags: [],
+                            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: n, context: nil, eventNumber: 0,
+                            clickCount: 1, pressure: t == .leftMouseUp ? 0 : 1) else { continue }
+                        NSApp.postEvent(e, atStart: false)
+                    } else {
+                        DispatchQueue.main.sync {
+                            // The app's own front window under the point (the session's full-screen system windows lie
+                            // over everything).
+                            guard let w = NSApp.windows.filter({ $0.isVisible && $0.frame.contains(p) })
+                                    .sorted(by: { ($0.level.rawValue, -$0.orderedIndex) > ($1.level.rawValue, -$1.orderedIndex) }).first,
+                                  let e = NSEvent.mouseEvent(with: t, location: w.convertPoint(fromScreen: p), modifierFlags: [],
+                                                             timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: w.windowNumber,
+                                                             context: nil, eventNumber: 0, clickCount: 1,
+                                                             pressure: t == .rightMouseUp ? 0 : 1) else { return }
+                            if t == .leftMouseDown { trialDown = (w.windowNumber, w.frame.origin) }
+                            NSApp.postEvent(e, atStart: false)
+                        }
+                    }
+                    usleep(1000)
+                }
+            }
+        }
     }
 
     func unregisterHotKey() { if let h = hotKey { UnregisterEventHotKey(h); hotKey = nil } }

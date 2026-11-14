@@ -96,10 +96,10 @@ extension PanelController {
     func drag(from down: NSEvent) {
         guard let w = window, let s = snap else { return }
         dragBegin()
-        let p0 = NSEvent.mouseLocation, top0 = top
+        let p0 = trialPointer ?? NSEvent.mouseLocation, top0 = top
         var samples: [(Double, CGFloat)] = [(down.timestamp, top)]
         while let e = w.nextEvent(matching: [.leftMouseDragged, .leftMouseUp], until: .distantFuture, inMode: .eventTracking, dequeue: true) {
-            let p = NSEvent.mouseLocation
+            let p = trialPointer ?? NSEvent.mouseLocation
             dragMove(raw: top0 + (p.y - p0.y), sideways: p.x - p0.x, snap: s)
             samples.append((e.timestamp, top))
             samples.removeAll { e.timestamp - $0.0 > 0.08 }   // the speed of the last 80 ms
