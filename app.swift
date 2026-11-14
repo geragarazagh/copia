@@ -109,7 +109,7 @@ final class App: NSObject, NSApplicationDelegate {
         }
         // Opened by a person, as a second opening does (applicationShouldHandleReopen): the big window. A login or
         // background start shows nothing.
-        if openedByPerson { browser.show(nil) }
+        if openedByPerson { browser.show(.all) }
         if !trial { updater?.start() }   // the daily check; never in a trial
 
         // Every hour: what the keep-history setting and Recently Deleted let go, and paste files older than a day.
@@ -123,7 +123,8 @@ final class App: NSObject, NSApplicationDelegate {
     /// Opening the app again (Finder, Spotlight, Launchpad) shows the big window at the pane last used; ⌘, opens it
     /// at Settings (clipboard.md, «His pick»). Closing every window leaves the app running.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
-        browser.show(browser.pane == .settings ? .all : nil)
+        // Always the history, All: 0.4 reopened the pane last used, so after ⌘, it opened on Settings (his review).
+        browser.show(.all)
         updater?.opened()   // an update found while nobody looked comes forward now
         return false
     }

@@ -50,7 +50,9 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     private(set) var rows: [Row] = []
     var sel = Selection()
     private var undo: [([Int64], Selection)] = []
-    private var pending: Int64?   // a plain click on a picked row among several: decided on mouse up (Finder)
+    var pending: Int64?
+    /// What a drag out of the list carries (drag.swift).
+    var draggedIDs: [Int64] = []   // a plain click on a picked row among several: decided on mouse up (Finder)
     private var hiding = false
     /// The Space preview (preview.swift).
     lazy var preview: PreviewController = { let p = PreviewController(store: store); p.panel = self; return p }()
@@ -130,10 +132,51 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
             if d != day { r.append(.head(dayText(d))); day = d }
             r.append(.entry(i))
         }
+        let before = rowKeys
         rows = r
-        view.table.reloadData()
+        rowKeys = r.map { row -> String in
+            switch row { case .head(let t): "h:" + t; case .entry(let i): "e:\(shown[i].id)" }
+        }
+        // A deletion or its undo, on screen: the system's own list motion (Mail's: the rows fade while the ones below
+        // slide up, or fade back in), the rows' only animation; every other change (a search, a copy arriving) lands
+        // in one frame, as Spotlight's. 0.4 removed rows in one frame, so three deleted items vanished silently.
+        if animateNext, isVisible || testVisible, let change = listChange(before, rowKeys) {
+            animateNext = false
+            view.table.beginUpdates()
+            switch change {
+            case .removed(let ix): view.table.removeRows(at: ix, withAnimation: [.effectFade, .slideUp])
+            case .inserted(let ix): view.table.insertRows(at: ix, withAnimation: [.effectFade, .slideDown])
+            }
+            view.table.endUpdates()
+        } else {
+            animateNext = false
+            view.table.reloadData()
+        }
         updateFacts()
         fitHeight(animated: isVisible || testVisible)
+    }
+
+    /// The row identities last shown (a day's head by its title, an entry by its id), to tell a pure removal or
+    /// insertion from any other change.
+    private var rowKeys: [String] = []
+    /// The next reload comes from a deletion or its undo.
+    private var animateNext = false
+
+    enum ListChange: Equatable { case removed(IndexSet), inserted(IndexSet) }
+
+    /// Rows only taken out (or only put back), the rest in the same order: which ones. Anything else: nil.
+    func listChange(_ a: [String], _ b: [String]) -> ListChange? {
+        func gone(_ long: [String], _ short: [String]) -> IndexSet? {
+            guard long.count > short.count else { return nil }
+            var ix = IndexSet(), j = 0
+            for (i, k) in long.enumerated() {
+                if j < short.count && short[j] == k { j += 1 } else { ix.insert(i) }
+            }
+            return j == short.count ? ix : nil
+        }
+        if let ix = gone(a, b) { return .removed(ix) }
+        if let ix = gone(b, a) { return .inserted(ix) }
+        return nil
     }
 
     // MARK: height and place
@@ -239,6 +282,7 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     /// The selection changed: only the rows' colours, badges and the facts line change, in the same frame.
     func selectionChanged(scrollTo id: Int64? = nil) {
         typedSinceSelection = false
+        noteShown = nil
         defer { if preview.isOpen, let c = sel.cursor ?? sel.order.last, c != preview.entry?.id, let e = entry(c) { openPreview(e) } }
         for r in 0..<rows.count {
             if let c = view.table.view(atColumn: 0, row: r, makeIfNecessary: false) as? EntryCell, case .entry(let i) = rows[r] {
@@ -286,20 +330,40 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         let first = list.firstIndex { ids.contains($0) } ?? 0
         undo.append((ids, sel))
         store.delete(ids)
+        animateNext = true
         reload()
         let left = shown.map(\.id)
         sel.clear()
         if !left.isEmpty { sel.click(left[min(first, left.count - 1)]) }
         selectionChanged(scrollTo: sel.order.first)
+        // Where they went, said once in the facts line (Recently Deleted keeps them 30 days; ⌘Z brings them back),
+        // until the selection changes or a few seconds pass.
+        note(String(format: L("Moved to Recently Deleted: %@"), counted(ids.count, "object|objects")) + "  ·  ⌘Z")
+        afterChange()
     }
+
+    /// A short note in the facts line in place of the facts.
+    func note(_ text: String) {
+        noteShown = text
+        view.setFacts(nil, note: text)
+        let mine = text
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+            guard let self, self.noteShown == mine else { return }
+            self.noteShown = nil
+            self.updateFacts()
+        }
+    }
+    private(set) var noteShown: String?
 
     /// ⌘Z: the last deletion comes back in place, picked as it was.
     func undoDelete() -> Bool {
         guard let (ids, before) = undo.popLast() else { return false }
         store.undelete(ids)
         sel = before
+        animateNext = true
         reload()
         selectionChanged(scrollTo: before.order.first)
+        afterChange()
         return true
     }
 
@@ -910,12 +974,24 @@ final class Separator: NSView {
 /// own selection is off and clicks come here.
 final class ListTable: NSTableView {
     weak var owner: PanelController?
+    private var down: (row: Int, at: NSPoint)?
     override func acceptsFirstMouse(for e: NSEvent?) -> Bool { true }
     override func mouseDown(with e: NSEvent) {
-        let r = row(at: convert(e.locationInWindow, from: nil))
+        let p = convert(e.locationInWindow, from: nil)
+        let r = row(at: p)
+        down = (r, p)
         owner?.mouseDown(row: r, flags: e.modifierFlags, clicks: e.clickCount)
     }
-    override func mouseUp(with e: NSEvent) { owner?.mouseUp() }
+    /// A row dragged 3 pt or more goes out as files (drag.swift).
+    override func mouseDragged(with e: NSEvent) {
+        guard let d = down, d.row >= 0 else { return }
+        let p = convert(e.locationInWindow, from: nil)
+        guard hypot(p.x - d.at.x, p.y - d.at.y) >= 3 else { return }
+        down = nil
+        owner?.pending = nil
+        owner?.dragOut(row: d.row, event: e, at: p)
+    }
+    override func mouseUp(with e: NSEvent) { down = nil; owner?.mouseUp() }
     override func menu(for e: NSEvent) -> NSMenu? {
         owner?.contextMenu(row: row(at: convert(e.locationInWindow, from: nil)))
     }

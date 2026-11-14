@@ -18,7 +18,10 @@ protocol ItemsView: AnyObject {
     /// The item's picture in screen points (Quick Look zooms from it).
     func pictureRect(for id: Int64) -> NSRect?
     func anchorView(for id: Int64?) -> NSView?
+    /// The window changed size: a grid lays itself out again.
+    func didResize()
 }
+extension ItemsView { func didResize() {} }
 
 // MARK: sidebar
 
@@ -131,6 +134,7 @@ final class ContentController: NSViewController {
         status.frame = NSRect(x: 16, y: (sh - 16) / 2, width: b.width - 32, height: 16)
         statusLine.isHidden = !showStatus; status.isHidden = !showStatus
         shown?.frame = area.bounds
+        items?.didResize()
     }
 
     func setStatus(_ s: NSAttributedString) {
@@ -235,6 +239,7 @@ final class IconsView: NSObject, ItemsView, NSCollectionViewDataSource, NSCollec
 
     func reload() {
         guard let o = owner else { return }
+        didResize()   // the icon size may have changed (View Options)
         // Day headers when the order is by date, as the panel and Photos group a history; otherwise one plain run.
         if o.sort == .date {
             var out: [(String?, [Entry])] = []
@@ -282,6 +287,40 @@ final class IconsView: NSObject, ItemsView, NSCollectionViewDataSource, NSCollec
 
     func anchorView(for id: Int64?) -> NSView? { id.flatMap(path).flatMap { grid.item(at: $0)?.view } }
 
+    /// Photos' way, not Finder's (his review of 0.4: «no empty space… at any size, up to full screen»): the columns
+    /// fill the width exactly. The icon size of View Options sets how many fit; the cells then grow to share the
+    /// rest, so a wider window gives a little bigger pictures until one more column fits, and the right edge is
+    /// never a strip of nothing. Pictures are drawn at a size rounded up to 16 pt, so resizing makes no new ones.
+    private(set) var cell = NSSize(width: 112, height: 142)
+    private(set) var cellSide: CGFloat = 64
+    static let spacing: CGFloat = 8, inset: CGFloat = 20
+
+    static func columns(width w: CGFloat, iconSize: CGFloat) -> Int {
+        let base = IconItem.size(side: iconSize).width
+        return max(1, Int((w - 2 * inset + spacing) / (base + spacing)))
+    }
+
+    /// The width a grid of `n` columns needs at this icon size (the window's default and minimum come from it).
+    static func width(columns n: Int, iconSize: CGFloat) -> CGFloat {
+        2 * inset + CGFloat(n) * IconItem.size(side: iconSize).width + CGFloat(n - 1) * spacing
+    }
+
+    func didResize() {
+        guard let o = owner else { return }
+        let w = scroll.contentView.bounds.width
+        guard w > 0 else { return }
+        let base = IconItem.size(side: o.iconSize).width
+        let n = Self.columns(width: w, iconSize: o.iconSize)
+        let cw = floor((w - 2 * Self.inset - CGFloat(n - 1) * Self.spacing) / CGFloat(n))
+        let side = floor(o.iconSize * cw / base)
+        let size = NSSize(width: cw, height: IconItem.size(side: side).height)
+        guard size != cell else { return }
+        cell = size; cellSide = side
+        (grid.collectionViewLayout as? NSCollectionViewFlowLayout)?.minimumInteritemSpacing = Self.spacing
+        grid.collectionViewLayout?.invalidateLayout()
+        for case let it as IconItem in grid.visibleItems() { it.resize(side: side) }
+    }
+
     func numberOfSections(in c: NSCollectionView) -> Int { sections.count }
     func collectionView(_ c: NSCollectionView, numberOfItemsInSection s: Int) -> Int { sections[s].1.count }
 
@@ -289,7 +328,7 @@ final class IconsView: NSObject, ItemsView, NSCollectionViewDataSource, NSCollec
         let it = c.makeItem(withIdentifier: IconItem.id, for: p) as! IconItem
         if let o = owner {
             let e = sections[p.section].1[p.item]
-            it.show(e, store: o.store, side: o.iconSize, deleted: o.pane == .deleted)
+            it.show(e, store: o.store, side: cellSide, deleted: o.pane == .deleted)
             it.badge(gridBadge(o.order.count > 1 ? o.order.firstIndex(of: e.id).map { $0 + 1 } : nil))
         }
         return it
@@ -302,7 +341,7 @@ final class IconsView: NSObject, ItemsView, NSCollectionViewDataSource, NSCollec
     }
 
     func collectionView(_ c: NSCollectionView, layout: NSCollectionViewLayout, sizeForItemAt p: IndexPath) -> NSSize {
-        IconItem.size(side: owner?.iconSize ?? 64)
+        cell
     }
 
     func collectionView(_ c: NSCollectionView, didSelectItemsAt p: Set<IndexPath>) { changed() }
@@ -323,6 +362,27 @@ final class KeyGrid: NSCollectionView {
         let p = indexPathForItem(at: convert(e.locationInWindow, from: nil))
         lastClicked = p
         if e.clickCount == 2, p != nil { owner?.copy(nil); return }
+        // A plain press on an item: Finder's way, a drag takes the picks out as files (drag.swift), a click picks.
+        if let p, e.modifierFlags.intersection([.command, .shift]).isEmpty, let w = window {
+            if !selectionIndexPaths.contains(p) {
+                let gone = selectionIndexPaths
+                selectionIndexPaths = [p]
+                if !gone.isEmpty { delegate?.collectionView?(self, didDeselectItemsAt: gone) }
+                delegate?.collectionView?(self, didSelectItemsAt: [p])
+            }
+            let start = convert(e.locationInWindow, from: nil)
+            while let ev = w.nextEvent(matching: [.leftMouseDragged, .leftMouseUp], until: .distantFuture, inMode: .eventTracking, dequeue: true) {
+                let q = convert(ev.locationInWindow, from: nil)
+                if ev.type == .leftMouseDragged, hypot(q.x - start.x, q.y - start.y) >= 3 { owner?.dragOut(from: self, event: ev, at: q); return }
+                if ev.type == .leftMouseUp { break }
+            }
+            if selectionIndexPaths.count > 1 {   // a plain click on one of several picks leaves that one (Finder)
+                let gone = selectionIndexPaths.subtracting([p])
+                selectionIndexPaths = [p]
+                delegate?.collectionView?(self, didDeselectItemsAt: gone)
+            }
+            return
+        }
         let plain = e.modifierFlags.intersection([.command, .shift]).isEmpty
         let many = p.map { selectionIndexPaths.contains($0) && selectionIndexPaths.count > 1 } ?? false
         super.mouseDown(with: e)
@@ -397,14 +457,18 @@ final class IconItem: NSCollectionViewItem {
 
     func show(_ e: Entry, store: Store, side s: CGFloat, deleted: Bool) {
         side = s
-        picture.image = Thumbs.shared.thumb(e, store: store, side: s)
+        picture.image = Thumbs.shared.thumb(e, store: store, side: (s / 16).rounded(.up) * 16)
         name.stringValue = shownTitle(e)
-        meta.stringValue = metaFacts(e, short: true)
+        // In Recently Deleted each item says how long it stays, as Photos and Notes count the days down there.
+        meta.stringValue = deleted ? daysLeft(e) : metaFacts(e, short: true)
         layout()
         update()
     }
 
     func badge(_ n: Int?) { badgeV.number = n; badgeV.isHidden = n == nil }
+
+    /// A new cell size while the window is resized: the same picture scaled, laid out again.
+    func resize(side s: CGFloat) { side = s; layout() }
 
     private func layout() {
         let w = view.bounds.width > 0 ? view.bounds.width : IconItem.size(side: side).width
@@ -447,6 +511,13 @@ func metaFacts(_ e: Entry, short: Bool = false) -> String {
 }
 
 final class FlippedView: NSView { override var isFlipped: Bool { true } }
+
+/// «29 дней»: what Recently Deleted keeps of an entry before it is removed for good.
+func daysLeft(_ e: Entry, now: Date = Date()) -> String {
+    guard let d = e.deleted else { return "" }
+    let left = Int(ceil((d.timeIntervalSince1970 + recentlyDeletedDays * 86400 - now.timeIntervalSince1970) / 86400))
+    return counted(max(1, min(Int(recentlyDeletedDays), left)), "day|days")
+}
 
 final class Plate: NSView {
     var color: NSColor? { didSet { needsDisplay = true } }
@@ -594,7 +665,7 @@ final class ListView: NSObject, ItemsView, NSTableViewDataSource, NSTableViewDel
         switch k {
         case .date:
             let f = DateFormatter(); f.locale = uiLocale; f.doesRelativeDateFormatting = true; f.dateStyle = .medium; f.timeStyle = .short
-            cell.textField?.stringValue = f.string(from: e.copied)
+            cell.textField?.stringValue = o.pane == .deleted ? daysLeft(e) : f.string(from: e.copied)
         case .size: cell.textField?.stringValue = e.bytes > 0 ? sizeText(e.bytes) : "—"
         case .kind: cell.textField?.stringValue = kindName(e)
         case .app: cell.textField?.stringValue = appName(e.app)
@@ -614,6 +685,18 @@ final class ListView: NSObject, ItemsView, NSTableViewDataSource, NSTableViewDel
 
 final class KeyTable: NSTableView {
     weak var owner: BrowserController?
+    override func mouseDown(with e: NSEvent) {
+        let start = convert(e.locationInWindow, from: nil)
+        let r = row(at: start)
+        guard r >= 0, e.clickCount == 1, e.modifierFlags.intersection([.command, .shift]).isEmpty, let w = window else { return super.mouseDown(with: e) }
+        if !selectedRowIndexes.contains(r) { selectRowIndexes([r], byExtendingSelection: false) }
+        while let ev = w.nextEvent(matching: [.leftMouseDragged, .leftMouseUp], until: .distantFuture, inMode: .eventTracking, dequeue: true) {
+            let q = convert(ev.locationInWindow, from: nil)
+            if ev.type == .leftMouseDragged, hypot(q.x - start.x, q.y - start.y) >= 3 { owner?.dragOut(from: self, event: ev, at: q); return }
+            if ev.type == .leftMouseUp { break }
+        }
+        selectRowIndexes([r], byExtendingSelection: false)
+    }
     override func keyDown(with e: NSEvent) { if !Items.key(e, owner: owner) { super.keyDown(with: e) } }
     override func menu(for e: NSEvent) -> NSMenu? {
         guard let o = owner else { return nil }

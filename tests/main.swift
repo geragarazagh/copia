@@ -174,6 +174,8 @@ func unit() {
     check(ds.entries(deleted: true).count == 2, "⌘⌫ goes to Recently Deleted")
     check(pc.undoDelete() && pc.shown.map(\.id) == shown0 && pc.sel.order == picked, "⌘Z: back in place, picked as before")
     pc.sel.clear(); pc.selectAll(); check(pc.sel.order == did, "⌘A in copy order")
+    check(pc.listChange(["h", "a", "b", "c"], ["h", "c"]) == .removed([1, 2]) && pc.listChange(["h", "c"], ["h", "a", "b", "c"]) == .inserted([1, 2])
+          && pc.listChange(["a", "b"], ["b", "a"]) == nil, "a deletion and its undo are told apart from any other change (animated)")
     pc.mouseDown(row: 1, flags: [], clicks: 1)
     check(pc.sel.order == did, "a plain click on a picked row keeps the set until the mouse goes up")
     pc.mouseUp(); check(pc.sel.order == [shown0[0]], "…then picks the one row")
@@ -416,6 +418,7 @@ func unit() {
     for d in [dir, fdir, ddir, sdir, pdir] { try? FileManager.default.removeItem(at: d) }
     browserTests()
     orderTests()
+    dragTests()
     // ⌘ shortcuts whatever the layout: a Cyrillic «ф» on the A key is read as «a» (macOS 27.2: ⌘A did nothing).
     do {
         func cmd(_ ch: String, _ code: UInt16) -> NSEvent {
@@ -434,6 +437,26 @@ func unit() {
         b.frame = NSRect(x: 5, y: 5, width: 20, height: 20); check(b.frame.width > 20, "a capsule stays one after a layout")
     }
     finish("unit")
+}
+
+/// Dragging out: one file per picked thing, in pick order (0.4's recording: two items became one merged text file).
+func dragTests() {
+    let dir = tmpDir("drag")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let (st, ids) = seeded(dir, mockSpecs())
+    let all = st.entries()
+    func e(_ id: Int64) -> Entry { all.first { $0.id == id }! }
+    let two = Drag.items([e(ids[7]), e(ids[9])], store: st)
+    check(two.count == 2 && two.allSatisfy { $0.types.contains(.fileURL) && $0.types.contains(.string) }, "two texts: two files, each with its text")
+    let names = two.compactMap { $0.string(forType: .fileURL).flatMap(URL.init(string:))?.lastPathComponent }
+    check(names.count == 2 && names.allSatisfy { $0.hasSuffix(".txt") || $0.hasSuffix(".rtf") } && Set(names).count == 2, "two different text files: \(names)")
+    check(two.compactMap { $0.string(forType: .fileURL).flatMap(URL.init(string:)) }.allSatisfy { FileManager.default.fileExists(atPath: $0.path) }, "the files exist")
+    let twelve = Drag.items([e(ids[5])], store: st)
+    check(twelve.count == 12, "twelve Finder files go out as twelve: \(twelve.count)")
+    let mixed = Drag.items([e(ids[12]), e(ids[8]), e(ids[13])], store: st)
+    check(mixed.count == 1 + 1 + 3, "an image, a link, three images: five items (\(mixed.count))")
+    check(mixed[1].string(forType: .fileURL)?.hasSuffix(".webloc") == true && mixed[1].string(forType: .URL) == "https://geragaraza.com", "a link is a .webloc with its address")
+    check(mixed.allSatisfy { $0.types.contains(.own) }, "marked as ours: a drag is never recorded as a copy")
 }
 
 /// 0.5, his review of 0.4: an item copied again, from anywhere or from Copia itself, moves to the top; one entry, not twins.

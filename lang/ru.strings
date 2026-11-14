@@ -98,3 +98,5 @@
 "Bottom Left" = "Внизу слева";
 "Bottom Center" = "Внизу по центру";
 "Bottom Right" = "Внизу справа";
+"Moved to Recently Deleted: %@" = "Перемещено в «Недавно удаленные»: %@";
+"day|days" = "день|дня|дней";

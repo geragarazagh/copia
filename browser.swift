@@ -208,13 +208,14 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
     }
 
     private func makeWindow() -> BrowserWindow {
-        let w = BrowserWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 680),
+        let (defaultSize, minSize) = windowSizes()
+        let w = BrowserWindow(contentRect: NSRect(origin: .zero, size: defaultSize),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                               backing: .buffered, defer: false)
         w.owner = self
         w.delegate = self
         w.isReleasedWhenClosed = false
-        w.minSize = NSSize(width: 620, height: 380)
+        w.contentMinSize = minSize
         w.titlebarSeparatorStyle = .automatic
         w.toolbarStyle = .unified
         let sideItem = NSSplitViewItem(sidebarWithViewController: sidebar)
@@ -228,9 +229,9 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
         split.splitView.dividerStyle = .thin
         w.contentViewController = split
         if let f = store.setting("browser.frame") { w.setFrame(NSRectFromString(f), display: false) }
-        else { w.setContentSize(NSSize(width: 1100, height: 680)); w.center() }
+        else { w.setContentSize(defaultSize); w.center() }
         // Wide enough for the longest row in every language («Недавно удаленные»).
-        split.splitView.setPosition(CGFloat(store.setting("browser.sidebar").flatMap(Double.init) ?? 230), ofDividerAt: 0)
+        split.splitView.setPosition(CGFloat(store.setting("browser.sidebar").flatMap(Double.init) ?? Double(Self.sidebarWidth)), ofDividerAt: 0)
         if store.setting("browser.sidebarHidden") == "1" { sideItem.isCollapsed = true }
         let tb = NSToolbar(identifier: "browser")
         tb.delegate = self
@@ -243,9 +244,34 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
         }
         w.toolbar = tb
         toolbar = tb
+        // A toolbar saved by 0.4 without them gets them back (they can't be taken out any more).
+        for id in [NSToolbarItem.Identifier.view, .sortBy] where !tb.items.contains(where: { $0.itemIdentifier == id }) {
+            let after = id == .sortBy ? (tb.items.firstIndex { $0.itemIdentifier == .view }.map { $0 + 1 }) : nil
+            tb.insertItem(withItemIdentifier: id, at: after ?? min(2, tb.items.count))
+        }
         window = w
         return w
     }
+
+    /// The window's first size and its smallest, computed from what it shows rather than picked (his review of 0.4:
+    /// 0.4 opened at 1100 × 680 with a fixed 620 × 380 minimum; HIG, Windows: «choose an initial size that minimizes
+    /// empty areas», and a minimum where nothing overlaps). Default: the sidebar and five columns of icons, three rows
+    /// under a day's title. Smallest: three columns, two rows, and room for the toolbar so the title is never cut.
+    /// COPIA_COLUMNS sets the default's columns for the variants of his look.
+    func windowSizes() -> (NSSize, NSSize) {
+        let n = Int(ProcessInfo.processInfo.environment["COPIA_COLUMNS"] ?? "") ?? 5
+        let side = Self.sidebarWidth + 1
+        let rowH = IconItem.size(side: iconSize).height, lines: CGFloat = 12
+        let chrome: CGFloat = 52 + ContentController.statusH + 34 + 8 + 16   // toolbar, status bar, a day's title, insets
+        let def = NSSize(width: side + IconsView.width(columns: n, iconSize: iconSize), height: chrome + 3 * rowH + 2 * lines)
+        let min = NSSize(width: side + max(IconsView.width(columns: 3, iconSize: iconSize), Self.toolbarMinimum),
+                         height: chrome + 2 * rowH + lines)
+        return (def, min)
+    }
+    static let sidebarWidth: CGFloat = 230
+    /// What the toolbar needs beside the sidebar: the longest pane title with its subtitle, the view switch, Sort By,
+    /// Share and the search as its button (measured in the agents' session on 27.2 in ru, the longest of the three).
+    static let toolbarMinimum: CGFloat = 470
 
     /// The window's size, sidebar, toolbar set and display mode, into the store (nothing in ~/Library/Preferences).
     func saveLayout() {
@@ -314,7 +340,8 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
     private func updateTitle() {
         guard let w = window else { return }
         w.title = pane == .all ? L("Clipboard") : pane.title
-        w.subtitle = pane == .settings ? "" : counted(shown.count, "object|objects")
+        // No subtitle: the status bar already counts (0.4 said «21 objects» twice; Finder's title stands alone).
+        w.subtitle = ""
     }
 
     /// «Выбрано 4 из 14 · 3 381 символ · 519 слов · ≈ 2 737 токенов · 6,2 МБ», or the count alone.
@@ -401,16 +428,42 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
         store.delete(ids)
         window?.undoManager?.registerUndo(withTarget: self) { $0.restore(ids) }
         window?.undoManager?.setActionName(L("Delete"))
-        order = next.map { [$0] } ?? []
-        reload()
-        panelReload()
+        // The deleted items fade (150 ms, the system's ease), then the rest close up in one frame; the status bar says
+        // where they went (his review of 0.4: deleting was silent).
+        let views = ids.compactMap { content.items?.anchorView(for: $0) }.filter { !($0 === content.items?.anchorView(for: nil)) }
+        let finish = { [weak self] in
+            guard let self else { return }
+            for v in views { v.alphaValue = 1 }
+            self.order = next.map { [$0] } ?? []
+            self.reload()
+            self.panelReload()
+            self.flashStatus(String(format: L("Moved to Recently Deleted: %@"), counted(ids.count, "object|objects")) + "  ·  ⌘Z")
+        }
+        if views.isEmpty || mode == .gallery || Ticker.manual { finish(); return }
+        NSAnimationContext.runAnimationGroup({ c in
+            c.duration = 0.15
+            for v in views { v.animator().alphaValue = 0 }
+        }, completionHandler: finish)
     }
+
+    /// A note in the status bar for a few seconds, then the counts again.
+    func flashStatus(_ text: String) {
+        statusNote = text
+        content.setStatus(NSAttributedString(string: text, attributes: [.font: NSFont.systemFont(ofSize: 11.5), .foregroundColor: NSColor.secondaryLabelColor]))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+            guard let self, self.statusNote == text else { return }
+            self.statusNote = nil
+            self.updateStatus()
+        }
+    }
+    private var statusNote: String?
 
     private func restore(_ ids: [Int64]) {
         store.undelete(ids)
         window?.undoManager?.registerUndo(withTarget: self) { c in c.store.delete(ids); c.reload(); c.panelReload() }
         if pane != .deleted { order = ids }
         reload()
+        content.items?.scrollToSelection()   // HIG, Undo: show what came back
         panelReload()
     }
 
@@ -727,6 +780,11 @@ extension BrowserController: NSToolbarDelegate, NSSharingServicePickerToolbarIte
     func toolbarDefaultItemIdentifiers(_ t: NSToolbar) -> [NSToolbarItem.Identifier] {
         [.toggleSidebar, .sidebarTrackingSeparator, .view, .sortBy, .flexibleSpace, .share, .search]
     }
+
+    /// View and Sort By stay in the toolbar whatever is customised (his recording: Sort By removed left no visible way
+    /// to sort). HIG, Toolbars: the toolbar can't be the only place for a command, so sorting is also in the View menu
+    /// and on a right-click on empty space, as in Finder.
+    func toolbarImmovableItemIdentifiers(_ t: NSToolbar) -> Set<NSToolbarItem.Identifier> { [.view, .sortBy] }
 
     func toolbarAllowedItemIdentifiers(_ t: NSToolbar) -> [NSToolbarItem.Identifier] {
         [.toggleSidebar, .sidebarTrackingSeparator, .view, .sortBy, .share, .delete, .quickLook, .search, .space, .flexibleSpace]
