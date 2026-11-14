@@ -58,7 +58,7 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     var openBrowser: ((Pane) -> Void)?
     /// Off-screen renders draw the selection as in a focused window.
     var forceFocus = false
-    /// Slows every animation by this factor, to step its frames in a test (CLIP_SLOW).
+    /// Slows every animation by this factor, to step its frames in a test (COPIA_SLOW).
     var slow: Double { Ticker.slow }
 
     init(store: Store, monitor: Monitor?, onScreen: Bool = true) {
@@ -251,7 +251,7 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     func copySelection() {
         let picked = sel.order.compactMap(entry)
         guard !picked.isEmpty else { return }
-        let r = Clip.write(picked.map { ($0, store.reps($0.id)) }, store: store, to: pasteboard)
+        let r = Copia.write(picked.map { ($0, store.reps($0.id)) }, store: store, to: pasteboard)
         monitor?.ownCount = r.count
         hide()
     }

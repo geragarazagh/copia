@@ -1,6 +1,6 @@
-// Clip (working name; the name lives in ./build only): a clipboard history for macOS. Every copy is kept, any kind
+// Copia (the name lives in ./build only; Clip until 2026-11-14): a clipboard history for macOS. Every copy is kept, any kind
 // and any size, and given back one or many at once: pick several like files in Finder, ⌘C, and one ⌘V pastes them
-// all, in the order they were picked. Offline: no network call of any kind. Data: ~/.local/share/clip.
+// all, in the order they were picked. Offline: no network call of any kind. Data: ~/.local/share/copia.
 //
 //   --data DIR       keep the history in DIR instead (tests and trials)
 //   --quit-after S   quit by itself after S seconds (a trial on a real screen must end without a person)
@@ -23,7 +23,7 @@ if let me = Bundle.main.bundleIdentifier,
 if let a = arg("--appearance") { NSApplication.shared.appearance = NSAppearance(named: a == "dark" ? .darkAqua : .aqua) }
 
 let dataDir = arg("--data").map { URL(fileURLWithPath: $0) }
-    ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/share/clip")
+    ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/share/copia")
 
 let store: Store
 do { store = try Store(dir: dataDir) } catch {

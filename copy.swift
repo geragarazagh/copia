@@ -4,7 +4,7 @@
 // between several pastes (the race that lost his images in ClipBook: rounds of clear, one image, ⌘V).
 import AppKit
 
-enum Clip {
+enum Copia {
     /// The items of one write, in the order of the selection.
     /// - several entries that are all text: ONE item, their plain texts joined by a new line (his example: a dictated
     ///   message, then ten pages, pasted as one text);
@@ -68,7 +68,7 @@ enum Clip {
         }
         for it in out {
             it.setString("1", forType: .own)   // inside the same item: a marker item of its own would paste as an extra
-            it.setString(Bundle.main.bundleIdentifier ?? "com.geragaraza.clip", forType: .source)
+            it.setString(Bundle.main.bundleIdentifier ?? "com.geragaraza.copia", forType: .source)
         }
         return out
     }

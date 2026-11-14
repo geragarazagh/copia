@@ -5,7 +5,7 @@
 # otherwise.
 set -e
 cd "${0:A:h}"
-name=Clip min=13.0
+name=Copia min=13.0
 id=com.geragaraza.${(L)name} app=$name.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"

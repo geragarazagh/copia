@@ -1,5 +1,5 @@
-// Off-screen tests of Clip, built by ./test from the app's own sources (all but main.swift).
-//   clip-tests unit                 selection, facts, store, delete/undo, search speed, the paste folder
+// Off-screen tests of Copia, built by ./test from the app's own sources (all but main.swift).
+//   copia-tests unit                 selection, facts, store, delete/undo, search speed, the paste folder
 //   clip-tests capture              the monitor on a private named pasteboard
 //   clip-tests links                link titles and pictures from real Safari copies (tests/links), network denied
 //   clip-tests copy                 the one-write copy on a private named pasteboard: items and types, order, files
@@ -112,7 +112,7 @@ func unit() {
     let mode = (try? FileManager.default.attributesOfItem(atPath: dir.path)[.posixPermissions] as? Int) ?? 0
     check(mode == 0o700, "store folder 0700 (\(String(mode, radix: 8)))")
     let jm = Process(); jm.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
-    jm.arguments = [dir.appendingPathComponent("clip.sqlite").path, "PRAGMA journal_mode;"]
+    jm.arguments = [dir.appendingPathComponent("copia.sqlite").path, "PRAGMA journal_mode;"]
     let pipe = Pipe(); jm.standardOutput = pipe; try? jm.run(); jm.waitUntilExit()
     check(String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?.contains("wal") == true, "WAL")
     let imgEntry = st.entries().first { $0.kind == .image }!
@@ -174,7 +174,7 @@ func unit() {
     pc.mouseUp(); check(pc.sel.order == [shown0[0]], "…then picks the one row")
 
     // Keys through the real panel window (made, never shown): ⌘A, ⌘⌫, ⌘Z, arrows, ⌘C with one write, Esc.
-    let kpb = NSPasteboard(name: .init("com.geragaraza.clip.test.keys.\(getpid())"))
+    let kpb = NSPasteboard(name: .init("com.geragaraza.copia.test.keys.\(getpid())"))
     let kc = PanelController(store: ds, monitor: nil, onScreen: true)
     kc.pasteboard = kpb
     func key(_ ch: String, _ code: UInt16, _ mods: NSEvent.ModifierFlags = .command) -> Bool {
@@ -363,7 +363,7 @@ func unit() {
     check(menu.items.map(\.title) == ["Copy", "Copy as Plain Text", "Share…", "Open With", "", "Delete"], "menu: \(menu.items.map(\.title))")
     check(menu.items[5].keyEquivalent == "\u{8}" && menu.items[5].keyEquivalentModifierMask == .command, "Delete shows ⌘⌫")
     check(menu.items[3].submenu?.items.contains { $0.title == "TextEdit" } == true, "Open With lists TextEdit for a text")
-    let mpb = NSPasteboard(name: .init("com.geragaraza.clip.test.menu.\(getpid())"))
+    let mpb = NSPasteboard(name: .init("com.geragaraza.copia.test.menu.\(getpid())"))
     pv.pasteboard = mpb
     pv.menuCopyPlain()
     check(mpb.string(forType: .string) == "bold text" && mpb.pasteboardItems?.first?.types.contains(.rtf) == false, "Copy as Plain Text: the text without its style")
@@ -401,9 +401,9 @@ func unit() {
     let old = pdir.appendingPathComponent("paste/old"), fresh = pdir.appendingPathComponent("paste/new")
     for d in [old, fresh] { try! FileManager.default.createDirectory(at: d, withIntermediateDirectories: true) }
     try! FileManager.default.setAttributes([.creationDate: now.addingTimeInterval(-25 * 3600)], ofItemAtPath: old.path)
-    Clip.cleanPasteFolder(ps, all: false)
+    Copia.cleanPasteFolder(ps, all: false)
     check(!FileManager.default.fileExists(atPath: old.path) && FileManager.default.fileExists(atPath: fresh.path), "paste files: 24 h")
-    Clip.cleanPasteFolder(ps, all: true)
+    Copia.cleanPasteFolder(ps, all: true)
     check(!FileManager.default.fileExists(atPath: fresh.path), "paste files: all at launch")
 
     for d in [dir, fdir, ddir, sdir, pdir] { try? FileManager.default.removeItem(at: d) }
@@ -417,7 +417,7 @@ func browserTests() {
     defer { try? FileManager.default.removeItem(at: dir) }
     let (st, ids) = seeded(dir, mockSpecs())
     let b = BrowserController(store: st, monitor: nil)
-    b.pasteboard = NSPasteboard(name: .init("com.geragaraza.clip.test.b\(getpid())"))
+    b.pasteboard = NSPasteboard(name: .init("com.geragaraza.copia.test.b\(getpid())"))
     b.open(pane: .text); b.open(pane: .all)
     check(b.shown.count == ids.count, "All shows every entry: \(b.shown.count)")
     let count = { (p: Pane) -> Int in b.open(pane: p); return b.shown.count }
@@ -554,7 +554,7 @@ func copyTests(_ pb: NSPasteboard) {
     let own = NSPasteboard.PasteboardType.own.rawValue
 
     // Three images picked 3, 1, 2: three items, each a real file + PNG + TIFF, in the picked order.
-    var r = Clip.write(sel([2, 0, 1]), store: st, to: pb)
+    var r = Copia.write(sel([2, 0, 1]), store: st, to: pb)
     var ty = types(pb)
     check(ty.count == 3 && ty.allSatisfy { Set($0).isSuperset(of: [furl, png, tiff, own]) }, "3 images = 3 items of file URL + PNG + TIFF \(ty)")
     check(r.urls == 3 && r.expected == 3, "file URLs verified after the write (\(r.urls)/\(r.expected))")
@@ -565,23 +565,23 @@ func copyTests(_ pb: NSPasteboard) {
           "temporary files in paste/, readable names \(urls.map(\.lastPathComponent))")
     let tiffBack = pb.pasteboardItems?.first?.data(forType: .tiff)
     check(tiffBack.flatMap { NSBitmapImageRep(data: $0) }?.pixelsWide == 400, "TIFF made on request")
-    check(pb.pasteboardItems?.allSatisfy { $0.string(forType: .source) == (Bundle.main.bundleIdentifier ?? "com.geragaraza.clip") } == true, "source marked")
+    check(pb.pasteboardItems?.allSatisfy { $0.string(forType: .source) == (Bundle.main.bundleIdentifier ?? "com.geragaraza.copia") } == true, "source marked")
 
     // Three texts: one item, joined by a new line, in the picked order.
-    r = Clip.write(sel([5, 3, 4]), store: st, to: pb)
+    r = Copia.write(sel([5, 3, 4]), store: st, to: pb)
     check(types(pb).count == 1 && pb.string(forType: .string) == "third\nfirst\nsecond", "texts joined into one item: \(pb.string(forType: .string) ?? "nil")")
 
     // One rich text: kept rich.
-    r = Clip.write(sel([7]), store: st, to: pb)
+    r = Copia.write(sel([7]), store: st, to: pb)
     ty = types(pb)
     check(ty.count == 1 && Set(ty[0]).isSuperset(of: [rtf, html, str, own]), "one rich text keeps RTF and HTML \(ty)")
 
     // A Finder copy of three files: three items with their URLs, as Finder wrote them.
-    r = Clip.write(sel([6]), store: st, to: pb)
+    r = Copia.write(sel([6]), store: st, to: pb)
     check(((pb.readObjects(forClasses: [NSURL.self]) as? [URL]) ?? []) == files, "files go back as the same file URLs")
 
     // Text + image + files: one write, one item per thing, the text where it was picked.
-    r = Clip.write(sel([3, 0, 6]), store: st, to: pb)
+    r = Copia.write(sel([3, 0, 6]), store: st, to: pb)
     ty = types(pb)
     check(ty.count == 5 && ty[0].contains(str) && !ty[0].contains(furl) && ty[1].contains(png) && ty[2...].allSatisfy { $0.contains(furl) },
           "mixed selection: 5 items in order \(ty)")
@@ -593,7 +593,7 @@ func copyTests(_ pb: NSPasteboard) {
     let withFile = Snapshot(items: [[Rep(type: furl, data: Data(shotFile.absoluteString.utf8)), Rep(type: png, data: imgs[1])]], source: "com.geragaraza.pixlift")
     let (wfe, wfi) = prepare(withFile, dir: dir)!
     let wfid = st.add(wfe, wfi)
-    r = Clip.write([(st.entries().first { $0.id == wfid }!, st.reps(wfid))], store: st, to: pb)
+    r = Copia.write([(st.entries().first { $0.id == wfid }!, st.reps(wfid))], store: st, to: pb)
     ty = types(pb)
     check(ty.count == 1 && Set(ty[0]).isSuperset(of: [furl, png, tiff]), "image with its file: file URL + PNG + TIFF \(ty)")
     let reader = Process()
@@ -611,7 +611,7 @@ func copyTests(_ pb: NSPasteboard) {
     var got = false
     m.onCopy = { _ in got = true }
     m.start()
-    let w = Clip.write(sel([0, 1]), store: st, to: pb)
+    let w = Copia.write(sel([0, 1]), store: st, to: pb)
     m.ownCount = w.count
     _ = wait(0.8) { got }
     check(!got, "our copy is not recorded again")
@@ -639,7 +639,7 @@ func general() {
     let dir = tmpDir("general")
     let imgs = [testImage("1", (0.9, 0.2, 0.2)), testImage("2", (0.2, 0.7, 0.2)), testImage("3", (0.2, 0.3, 0.9))]
     let (st, ids) = seeded(dir, imgs.enumerated().map { (imageSnap($1), Date().addingTimeInterval(Double($0))) })
-    let r = Clip.write(ids.map { id in (st.entries().first { $0.id == id }!, st.reps(id)) }, store: st, to: pb)
+    let r = Copia.write(ids.map { id in (st.entries().first { $0.id == id }!, st.reps(id)) }, store: st, to: pb)
     mark()
     let ty = types(pb)
     check(ty.count == 3 && ty.allSatisfy { Set($0).isSuperset(of: [furl, png, tiff]) }, "general: 3 items of file URL + PNG + TIFF \(ty)")
@@ -664,8 +664,8 @@ func general() {
 
 /// The approved mockup's content (round 3), newest last; the panel's renders and the trials' seed use it.
 func mockSpecs() -> [(Snapshot, Date)] {
-    // CLIP_RES: a copy readable by the agents' own session (cs), whose user can't enter his home.
-    let res = ProcessInfo.processInfo.environment["CLIP_RES"] ?? "/Users/harazha/.local/share/clipboard/mock/res/"
+    // COPIA_RES: a copy readable by the agents' own session (cs), whose user can't enter his home.
+    let res = ProcessInfo.processInfo.environment["COPIA_RES"] ?? "/Users/harazha/.local/share/clipboard/mock/res/"
     let day = Calendar.current.startOfDay(for: Date())
     func at(_ h: Int, _ m: Int, _ d: Int = 0) -> Date { day.addingTimeInterval(Double(d * 86400 + h * 3600 + m * 60)) }
     func txt(_ n: String) -> String { ((try? String(contentsOfFile: res + "text/\(n).txt", encoding: .utf8)) ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -704,11 +704,11 @@ func mockSpecs() -> [(Snapshot, Date)] {
 func render(app: String, theme: String, out: String, mode: String) {
     let motion = mode == "motion"
     strings = Bundle(path: app)!
-    // CLIP_RES: a copy readable by the agents' own session (cs), whose user can't enter his home.
-    let res = ProcessInfo.processInfo.environment["CLIP_RES"] ?? "/Users/harazha/.local/share/clipboard/mock/res/"
+    // COPIA_RES: a copy readable by the agents' own session (cs), whose user can't enter his home.
+    let res = ProcessInfo.processInfo.environment["COPIA_RES"] ?? "/Users/harazha/.local/share/clipboard/mock/res/"
     let dir = tmpDir("render")
     let links = mode == "links"   // the real Safari copies of tests/links, newest on top
-    let lpb = NSPasteboard(name: .init("com.geragaraza.clip.render.\(getpid())"))
+    let lpb = NSPasteboard(name: .init("com.geragaraza.copia.render.\(getpid())"))
     let specs = links ? linkSpecs(lpb) : mockSpecs()
     let few = mode == "few" || links, empty = mode == "empty"
     let (st, ids) = seeded(dir, empty ? [] : links ? specs : few ? Array(specs.prefix(15).suffix(3)) : specs)
@@ -834,7 +834,7 @@ func linkSpecs(_ pb: NSPasteboard) -> [(Snapshot, Date)] {
 }
 
 func linkTests() {
-    let pb = NSPasteboard(name: .init("com.geragaraza.clip.test.\(getpid())"))
+    let pb = NSPasteboard(name: .init("com.geragaraza.copia.test.\(getpid())"))
     defer { pb.releaseGlobally() }
     let dir = tmpDir("links")
     let specs = linkSpecs(pb)
@@ -904,7 +904,7 @@ func linkTests() {
     let odir = tmpDir("links-v1")
     let o1 = try! Store(dir: odir); _ = o1
     let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
-    p.arguments = [odir.appendingPathComponent("clip.sqlite").path,
+    p.arguments = [odir.appendingPathComponent("copia.sqlite").path,
                    "ALTER TABLE entries DROP COLUMN url; ALTER TABLE entries DROP COLUMN picture; PRAGMA user_version = 1;"]
     try! p.run(); p.waitUntilExit()
     let o2 = try! Store(dir: odir)
@@ -920,10 +920,10 @@ NSApp.setActivationPolicy(.accessory)   // no Dock icon while the tests draw
 switch argv.count > 1 ? argv[1] : "" {
 case "unit": unit()
 case "capture":
-    let pb = NSPasteboard(name: .init("com.geragaraza.clip.test.\(getpid())"))
+    let pb = NSPasteboard(name: .init("com.geragaraza.copia.test.\(getpid())"))
     captureTests(pb, general: false); pb.releaseGlobally(); finish("capture")
 case "copy":
-    let pb = NSPasteboard(name: .init("com.geragaraza.clip.test.\(getpid())"))
+    let pb = NSPasteboard(name: .init("com.geragaraza.copia.test.\(getpid())"))
     copyTests(pb); pb.releaseGlobally(); finish("copy")
 case "general": general(); finish("general")
 case "links": linkTests(); finish("links")
@@ -932,10 +932,10 @@ case "readtiff" where argv.count == 3:   // copy's helper: another process askin
     print(d.flatMap { NSBitmapImageRep(data: $0) }?.pixelsWide ?? 0); exit(0)
 case "seed" where argv.count == 3:   // the mockup's content into a data folder, for a trial run of the app
     // The link fixtures too (run from the source folder: they are read from tests/links), so the trial shows titles and pictures.
-    let lpb = NSPasteboard(name: .init("com.geragaraza.clip.test.\(getpid())"))
+    let lpb = NSPasteboard(name: .init("com.geragaraza.copia.test.\(getpid())"))
     _ = seeded(URL(fileURLWithPath: argv[2]), mockSpecs() + linkSpecs(lpb).map { ($0.0, $0.1.addingTimeInterval(-86400)) })
     lpb.releaseGlobally(); exit(0)
 case "render" where argv.count >= 5: render(app: argv[2], theme: argv[3], out: argv[4], mode: argv.count > 5 ? argv[5] : "")
 default:
-    print("usage: clip-tests unit | capture | copy | general | links | render APP THEME OUT [motion]"); exit(2)
+    print("usage: copia-tests unit | capture | copy | general | links | render APP THEME OUT [motion]"); exit(2)
 }

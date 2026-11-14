@@ -24,7 +24,7 @@ final class Monitor {
     private(set) var lastCount: Int
     private(set) var denied = false
     private var timer: Timer?
-    private let queue = DispatchQueue(label: "com.geragaraza.clip.read", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "com.geragaraza.copia.read", qos: .userInitiated)
     private var reading = false
     private var waiting: (Int, Date, String?)?
 

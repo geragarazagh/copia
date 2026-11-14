@@ -1,4 +1,4 @@
-// A link's title and pictures, taken only from what the copying app itself put on the pasteboard: Clip makes no
+// A link's title and pictures, taken only from what the copying app itself put on the pasteboard: Copia makes no
 // network call, ever (his word, 2026-11-14: previews only «if no network call per link is needed», else links stay
 // text). Measured 2026-11-14 on macOS 27.2 in the agents' own session (cs), real Safari bytes in tests/links/:
 // - Safari's address bar (⌘L ⌘C) writes com.apple.linkpresentation.metadata: an archived LPLinkMetadata with the

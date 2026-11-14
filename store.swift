@@ -1,5 +1,5 @@
 // The history on disk: one plain SQLite database in WAL mode and two folders of content-addressed files, all in one
-// removable folder (~/.local/share/clip). No SwiftData: it needs macOS 14, and Maccy's SwiftData store grew to 1.89 GB
+// removable folder (~/.local/share/copia). No SwiftData: it needs macOS 14, and Maccy's SwiftData store grew to 1.89 GB
 // in 11 days from orphaned rows (issue #1496); here a representation row dies with its entry (ON DELETE CASCADE) and
 // a file is removed once no row names it. Used from the main thread only.
 import AppKit
@@ -28,7 +28,7 @@ final class Store {
                                    attributes: [.posixPermissions: 0o700])   // a history holds passwords too
         }
         try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)   // also when the folder was there
-        let path = dir.appendingPathComponent("clip.sqlite").path
+        let path = dir.appendingPathComponent("copia.sqlite").path
         guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
             throw StoreError(message: String(cString: sqlite3_errmsg(db)))
         }

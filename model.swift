@@ -51,7 +51,7 @@ struct Entry: Equatable {
 
 extension NSPasteboard.PasteboardType {
     /// Inside every item this app writes (never a separate item: a lone marker item would be an extra paste).
-    static let own = Self("com.geragaraza.clip.own")
+    static let own = Self("com.geragaraza.copia.own")
     static let source = Self("org.nspasteboard.source")
     static let concealed = Self("org.nspasteboard.ConcealedType")
     static let transient = Self("org.nspasteboard.TransientType")

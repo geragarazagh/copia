@@ -160,7 +160,7 @@ final class Thumbs {
         }
     }
 
-    static let ready = Notification.Name("ClipThumbReady")
+    static let ready = Notification.Name("CopiaThumbReady")
 
     /// An entry changed (edited, reverted): its pictures are made again.
     func forget(_ id: Int64) { for k in cache.keys where k.hasPrefix("\(id)-") { cache[k] = nil } }

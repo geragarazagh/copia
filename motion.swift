@@ -9,8 +9,8 @@ final class Ticker {
     /// Tests drive time by hand (Ticker.advance), so a frame at 1/60 s is exactly that frame.
     nonisolated(unsafe) static var manual = false
     nonisolated(unsafe) private static var live: [Ticker] = []
-    /// Slows every motion by this factor, to watch it on a real screen (CLIP_SLOW=10).
-    nonisolated(unsafe) static var slow = Double(ProcessInfo.processInfo.environment["CLIP_SLOW"] ?? "") ?? 1
+    /// Slows every motion by this factor, to watch it on a real screen (COPIA_SLOW=10).
+    nonisolated(unsafe) static var slow = Double(ProcessInfo.processInfo.environment["COPIA_SLOW"] ?? "") ?? 1
 
     private var step: ((Double) -> Bool)?
     private var timer: Timer?
