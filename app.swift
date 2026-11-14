@@ -25,6 +25,14 @@ nonisolated(unsafe) var trialDown: (Int, NSPoint)?
 /// The Carbon hot key's callback is a C function: it reaches the app through this.
 nonisolated(unsafe) var hotKeyAction: (() -> Void)?
 
+/// Sparkle (updates.swift), set by main.swift; nil in the tests, which build without it.
+struct Updater { let start: () -> Void, check: () -> Void, opened: () -> Void }
+nonisolated(unsafe) var updater: Updater?
+
+/// Started by a person (Finder, Spotlight, `open`): no login start, no background start, no test or trial flag.
+let openedByPerson = !CommandLine.arguments.contains { ["--background", "--login", "--trial", "--show", "--browser", "--data",
+                                                       "--quit-after", "--display"].contains($0) }
+
 final class App: NSObject, NSApplicationDelegate {
     let store: Store
     let monitor = Monitor()
@@ -97,6 +105,10 @@ final class App: NSObject, NSApplicationDelegate {
             let p = i + 1 < CommandLine.arguments.count ? Pane(rawValue: CommandLine.arguments[i + 1]) : nil
             browser.show(p)
         }
+        // Opened by a person, as a second opening does (applicationShouldHandleReopen): the big window. A login or
+        // background start shows nothing.
+        if openedByPerson { browser.show(nil) }
+        if !trial { updater?.start() }   // the daily check; never in a trial
 
         // Every hour: what the keep-history setting and Recently Deleted let go, and paste files older than a day.
         housekeeping = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
@@ -110,8 +122,11 @@ final class App: NSObject, NSApplicationDelegate {
     /// at Settings (clipboard.md, «His pick»). Closing every window leaves the app running.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
         browser.show(browser.pane == .settings ? .all : nil)
+        updater?.opened()   // an update found while nobody looked comes forward now
         return false
     }
+
+    @objc func checkForUpdates() { updater?.check() }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 

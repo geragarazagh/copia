@@ -69,6 +69,9 @@ extension Keep {
     var title: String { switch self { case .days30: L("30 Days"); case .year1: L("1 Year"); case .forever: L("Forever") } }
 }
 
+/// Open at Login: the agent in the bundle (./build writes it; main.swift, --login), as in the other apps.
+let loginItem = SMAppService.agent(plistName: "\(Bundle.main.bundleIdentifier ?? "com.geragaraza.copia").login.plist")
+
 // MARK: the settings pane
 
 final class SettingsView: FlippedLayout {
@@ -112,7 +115,7 @@ final class SettingsView: FlippedLayout {
     func refresh() {
         guard let o = owner else { return }
         recorder.key = o.store.hotKey
-        login.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        login.state = loginItem.status == .enabled ? .on : .off
         keep.selectItem(at: Keep.allCases.firstIndex(of: o.store.keep) ?? 0)
     }
 
@@ -129,7 +132,11 @@ final class SettingsView: FlippedLayout {
         // A trial never touches the person's login items.
         guard !trial else { return }
         do {
-            if login.state == .on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+            if login.state == .on {
+                if loginItem.status == .requiresApproval { SMAppService.openSystemSettingsLoginItems() } else { try loginItem.register() }
+            } else {
+                try loginItem.unregister()
+            }
         } catch {
             NSAlert(error: error).runModal()
         }
@@ -364,7 +371,8 @@ func makeMainMenu(settings: Selector, target: AnyObject) -> NSMenu {
     servicesItem.submenu = services
     NSApp.servicesMenu = services
     sub(name, [
-        it(String(format: L("About %@"), name), #selector(NSApplication.orderFrontStandardAboutPanel(_:)), ""), .separator(),
+        it(String(format: L("About %@"), name), #selector(NSApplication.orderFrontStandardAboutPanel(_:)), ""),
+        it(L("Check for Updates…"), #selector(App.checkForUpdates), target: target), .separator(),
         it(L("Settings…"), settings, ",", target: target), .separator(),
         servicesItem, .separator(),
         it(String(format: L("Hide %@"), name), #selector(NSApplication.hide(_:)), "h"),

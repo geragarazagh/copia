@@ -83,6 +83,7 @@
 "as Gallery" = "Галерея";
 /* The standard app menu, as TextEdit, Stickies and Chess word it (macOS 27.2). */
 "About %@" = "О приложении %@";
+"Check for Updates…" = "Проверить наличие обновлений…";
 "Services" = "Службы";
 "Hide %@" = "Скрыть %@";
 "Hide Others" = "Скрыть остальные";
