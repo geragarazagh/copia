@@ -128,3 +128,21 @@ final class App: NSObject, NSApplicationDelegate {
 
     func unregisterHotKey() { if let h = hotKey { UnregisterEventHotKey(h); hotKey = nil } }
 }
+
+/// The letter of a ⌘ shortcut whatever the keyboard layout. With a Cyrillic layout charactersIgnoringModifiers of
+/// ⌘A is «ф», so the panel's and the preview's own shortcuts did nothing (measured on macOS 27.2 with the Russian
+/// layout, 2026-11-14); menus avoid this by reading the key through the ASCII-capable layout, and so does this.
+func shortcutKey(_ e: NSEvent) -> String {
+    let raw = e.charactersIgnoringModifiers?.lowercased() ?? ""
+    if raw.unicodeScalars.allSatisfy(\.isASCII) { return raw }
+    guard let src = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue(),
+          let p = TISGetInputSourceProperty(src, kTISPropertyUnicodeKeyLayoutData) else { return raw }
+    let data = Unmanaged<CFData>.fromOpaque(p).takeUnretainedValue() as Data
+    var dead: UInt32 = 0, len = 0
+    var chars = [UniChar](repeating: 0, count: 4)
+    let st = data.withUnsafeBytes { b in
+        UCKeyTranslate(b.baseAddress!.assumingMemoryBound(to: UCKeyboardLayout.self), e.keyCode, UInt16(kUCKeyActionDown), 0,
+                       UInt32(LMGetKbdType()), OptionBits(kUCKeyTranslateNoDeadKeysBit), &dead, 4, &len, &chars)
+    }
+    return st == noErr && len > 0 ? String(utf16CodeUnits: chars, count: len).lowercased() : raw
+}

@@ -325,7 +325,7 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         // the keys, ⌘A and ⌘C belong to that text, never to the list behind it (a test machine run, 2026-11-14: ⌘A ⌘C
         // in the preview copied the whole history and hid the panel).
         if let k = NSApp.keyWindow, k !== window { return false }
-        let key = e.charactersIgnoringModifiers?.lowercased() ?? ""
+        let key = shortcutKey(e)
         let editor = window?.fieldEditor(false, for: view.field) as? NSTextView
         switch (key, mods) {
         case ("c", [.command]):

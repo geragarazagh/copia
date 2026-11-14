@@ -459,14 +459,14 @@ final class PreviewWindow: NSPanel {
 
     override func performKeyEquivalent(with e: NSEvent) -> Bool {
         let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.capsLock, .numericPad, .function])
-        switch (e.charactersIgnoringModifiers?.lowercased(), mods) {
+        switch (shortcutKey(e), mods) {
         case ("b", [.command]): owner?.toggle(.boldFontMask); return true
         case ("i", [.command]): owner?.toggle(.italicFontMask); return true
         default: break
         }
         // The text's own editing keys, as an Edit menu would give them (the app has no menu bar to carry them).
         guard isKeyWindow, let tv = firstResponder as? NSTextView else { return super.performKeyEquivalent(with: e) }
-        switch (e.charactersIgnoringModifiers?.lowercased(), mods) {
+        switch (shortcutKey(e), mods) {
         case ("a", [.command]): tv.selectAll(nil)
         case ("c", [.command]): tv.copy(nil)
         case ("x", [.command]): tv.cut(nil)
