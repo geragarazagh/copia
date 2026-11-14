@@ -81,3 +81,11 @@
 "as Icons" = "Значки";
 "as List" = "Список";
 "as Gallery" = "Галерея";
+/* The standard app menu, as TextEdit, Stickies and Chess word it (macOS 27.2). */
+"About %@" = "О приложении %@";
+"Services" = "Службы";
+"Hide %@" = "Скрыть %@";
+"Hide Others" = "Скрыть остальные";
+"Show All" = "Показать все";
+"Quit %@" = "Завершить %@";
+"Bring All to Front" = "Все окна — на передний план";

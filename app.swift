@@ -8,8 +8,8 @@ let trial = CommandLine.arguments.contains("--trial")
 let trialDisplay: UInt32? = CommandLine.arguments.firstIndex(of: "--display").flatMap {
     $0 + 1 < CommandLine.arguments.count ? UInt32(CommandLine.arguments[$0 + 1]) : nil }
 
-/// CLIP_TRACE=1: every key and click a window of the app gets, on stderr (trials).
-let traceEvents = ProcessInfo.processInfo.environment["CLIP_TRACE"] != nil
+/// COPIA_TRACE=1: every key and click a window of the app gets, on stderr (trials).
+let traceEvents = ProcessInfo.processInfo.environment["COPIA_TRACE"] != nil
 
 /// The screen of the trial display, when one is given.
 func trialScreen() -> NSScreen? {
@@ -28,7 +28,7 @@ final class App: NSObject, NSApplicationDelegate {
     private var hotKey: EventHotKeyRef?
     private var handlerInstalled = false
     private var lastOtherApp: String?
-    private let prepQueue = DispatchQueue(label: "com.geragaraza.clip.prepare", qos: .utility)
+    private let prepQueue = DispatchQueue(label: "com.geragaraza.copia.prepare", qos: .utility)
     private var housekeeping: Timer?
 
     init(store: Store) {
@@ -43,7 +43,7 @@ final class App: NSObject, NSApplicationDelegate {
             FileHandle.standardError.write(Data("No display \(trialDisplay!): not opening anything\n".utf8))
             exit(3)
         }
-        Clip.cleanPasteFolder(store, all: true)
+        Copia.cleanPasteFolder(store, all: true)
         store.purge()
         panel = PanelController(store: store, monitor: monitor)
         browser = BrowserController(store: store, monitor: monitor)
@@ -54,6 +54,8 @@ final class App: NSObject, NSApplicationDelegate {
             self.registerHotKey()
         }
         panel.openBrowser = { [weak self] p in self?.panel.hide(); self?.browser.show(p) }
+        // One window, no tabs: AppKit would add Show Tab Bar and the tab items to View and Window (seen on 27.2).
+        NSWindow.allowsAutomaticWindowTabbing = false
         NSApp.mainMenu = makeMainMenu(settings: #selector(openSettings), target: self)
 
         // The copying app, when it does not say so itself: the app in front, or, when the panel is in front, the one
@@ -94,7 +96,7 @@ final class App: NSObject, NSApplicationDelegate {
         housekeeping = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
             guard let self else { return }
             store.purge()
-            Clip.cleanPasteFolder(store, all: false)
+            Copia.cleanPasteFolder(store, all: false)
         }
     }
 

@@ -73,7 +73,16 @@ func inPane(_ e: Entry, _ p: Pane) -> Bool {
 enum ViewMode: Int, CaseIterable {
     case icons = 1, list = 2, gallery = 4
     var title: String { switch self { case .icons: L("as Icons"); case .list: L("as List"); case .gallery: L("as Gallery") } }
-    var symbol: String { switch self { case .icons: "square.grid.2x2"; case .list: "list.bullet"; case .gallery: "rectangle.grid.1x2" } }
+    /// Finder's own symbols (its toolbar and View menu on macOS 27.2: the gallery is squares below a rectangle).
+    var symbol: String { switch self { case .icons: "square.grid.2x2"; case .list: "list.bullet"; case .gallery: "squares.below.rectangle" } }
+    /// The symbol beside the item in a menu, as Finder's View menu draws its views: from macOS 26 on; macOS 27 hides
+    /// menu images unless the item asks for them (NSMenuItem.preferredImageVisibility, new in the 27 SDK), and Finder's
+    /// view items ask, the rest of its items carry none (seen on 27.2, 2026-11-14). Before 26 Apple's menus have none.
+    func dress(_ it: NSMenuItem) {
+        guard #available(macOS 26.0, *) else { return }
+        it.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        if #available(macOS 27.0, *) { it.preferredImageVisibility = .visible }
+    }
 }
 
 enum SortKey: String, CaseIterable {
@@ -172,9 +181,28 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
             w.setFrame(NSRect(x: s.visibleFrame.midX - w.frame.width / 2, y: s.visibleFrame.midY - w.frame.height / 2,
                               width: w.frame.width, height: w.frame.height), display: false)
         }
-        if trial { w.orderFrontRegardless(); return }   // a trial never takes the person's keyboard
-        if #available(macOS 14.0, *) { NSApp.activate() } else { NSApp.activate(ignoringOtherApps: true) }
+        // A trial on a display of its own inside his session never takes his keyboard; a trial in the agents' own
+        // login session (cs) is a whole Mac of its own and runs as he would.
+        if trial && trialDisplay != nil { w.orderFrontRegardless(); return }
+        // Dock: while this window is open the app is a normal one, with its icon lit in the Dock and its menu bar,
+        // as his apps with a window are (his word 2026-11-14 ~13:35); the panel alone never puts anything there.
+        // The policy goes first, so the window comes up already in a regular app and the menu bar with it.
+        if NSApp.activationPolicy() != .regular { NSApp.setActivationPolicy(.regular) }
+        // The window opens only on the person's own word (⌘, in the panel, the app opened again), so it takes the
+        // front. The cooperative activate() of macOS 14+ was refused when the ⌘, came from the panel, a window of an
+        // app not yet active (macOS 27.2, cs, 2026-11-14: the window opened behind Finder and Finder's menu bar
+        // stayed; tried before this call too, it still lost); this older call brings it forward there.
+        NSApp.activate(ignoringOtherApps: true)
         w.makeKeyAndOrderFront(nil)
+    }
+
+    /// Back to no Dock icon and no menu bar once the window is gone. After the close has run, so the window is
+    /// already off screen when the icon leaves and the next app takes the front in the same step.
+    private func leaveDock() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.isVisible, NSApp.activationPolicy() != .accessory else { return }
+            NSApp.setActivationPolicy(.accessory)
+        }
     }
 
     private func makeWindow() -> BrowserWindow {
@@ -232,6 +260,7 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
 
     func windowWillClose(_ n: Notification) {
         saveLayout()
+        leaveDock()
         QLPreviewPanel.sharedPreviewPanelExists() ? QLPreviewPanel.shared().orderOut(nil) : ()
     }
     func windowDidResize(_ n: Notification) { content.relayout() }
@@ -333,7 +362,7 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
 
     @objc func copy(_ sender: Any?) {
         guard pane != .deleted, !order.isEmpty else { return }
-        let r = Clip.write(picked.map { ($0, store.reps($0.id)) }, store: store, to: pasteboard)
+        let r = Copia.write(picked.map { ($0, store.reps($0.id)) }, store: store, to: pasteboard)
         monitor?.ownCount = r.count
     }
 
@@ -524,6 +553,7 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
         for v in ViewMode.allCases {
             let it = m.addItem(withTitle: v.title, action: [#selector(showIcons(_:)), #selector(showList(_:)), #selector(showGallery(_:))][ViewMode.allCases.firstIndex(of: v)!], keyEquivalent: String(v.rawValue))
             it.target = self
+            v.dress(it)
         }
         m.addItem(.separator())
         let s = m.addItem(withTitle: L("Sort By"), action: nil, keyEquivalent: "")

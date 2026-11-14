@@ -338,9 +338,10 @@ final class ViewOptions: NSObject, NSWindowDelegate {
 
 // MARK: menus
 
-/// The app's menus. An app with no Dock icon has no menu bar on screen, yet AppKit still finds key equivalents here,
-/// so ⌘1 ⌘2 ⌘4, ⌘J, ⌘Z, ⌘A and the rest work in the big window; the same View menu is the toolbar's and the right
-/// click's.
+/// The app's menus. The menu bar shows while the big window is open (the app then has a Dock icon: browser.swift,
+/// «Dock»); with only the panel there is none on screen, yet AppKit still finds key equivalents here. The app menu is
+/// the standard one (About, Settings…, Services, Hide, Hide Others, Show All, Quit) in the words of Apple's own apps
+/// (TextEdit, Stickies: «О приложении %@», «Про %@»); the View menu is also the toolbar's and the right click's.
 func makeMainMenu(settings: Selector, target: AnyObject) -> NSMenu {
     let main = NSMenu()
     func sub(_ title: String, _ items: [NSMenuItem]) {
@@ -356,8 +357,21 @@ func makeMainMenu(settings: Selector, target: AnyObject) -> NSMenu {
         i.target = tg
         return i
     }
-    let name = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Clip"
-    sub(name, [it(L("Settings…"), settings, ",", target: target)])
+    func viewItem(_ v: ViewMode, _ a: Selector) -> NSMenuItem { let i = it(v.title, a, String(v.rawValue)); v.dress(i); return i }
+    let name = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Copia"
+    let services = NSMenu(title: L("Services"))
+    let servicesItem = it(L("Services"), nil)
+    servicesItem.submenu = services
+    NSApp.servicesMenu = services
+    sub(name, [
+        it(String(format: L("About %@"), name), #selector(NSApplication.orderFrontStandardAboutPanel(_:)), ""), .separator(),
+        it(L("Settings…"), settings, ",", target: target), .separator(),
+        servicesItem, .separator(),
+        it(String(format: L("Hide %@"), name), #selector(NSApplication.hide(_:)), "h"),
+        it(L("Hide Others"), #selector(NSApplication.hideOtherApplications(_:)), "h", [.command, .option]),
+        it(L("Show All"), #selector(NSApplication.unhideAllApplications(_:)), ""), .separator(),
+        it(String(format: L("Quit %@"), name), #selector(NSApplication.terminate(_:)), "q"),
+    ])
     let sortItem = it(L("Sort By"), nil)
     let sortMenu = NSMenu()
     for k in SortKey.allCases {
@@ -376,9 +390,9 @@ func makeMainMenu(settings: Selector, target: AnyObject) -> NSMenu {
         it(L("Search"), #selector(BrowserController.focusSearch(_:)), "f"),
     ])
     sub(L("View"), [
-        it(ViewMode.icons.title, #selector(BrowserController.showIcons(_:)), "1"),
-        it(ViewMode.list.title, #selector(BrowserController.showList(_:)), "2"),
-        it(ViewMode.gallery.title, #selector(BrowserController.showGallery(_:)), "4"), .separator(),
+        viewItem(.icons, #selector(BrowserController.showIcons(_:))),
+        viewItem(.list, #selector(BrowserController.showList(_:))),
+        viewItem(.gallery, #selector(BrowserController.showGallery(_:))), .separator(),
         sortItem, .separator(),
         it(L("Quick Look"), #selector(BrowserController.quickLook(_:)), "y"), .separator(),
         it(L("Show Sidebar"), #selector(NSSplitViewController.toggleSidebar(_:)), "s", [.command, .control]),
@@ -388,7 +402,9 @@ func makeMainMenu(settings: Selector, target: AnyObject) -> NSMenu {
     ])
     sub(L("Window"), [
         it(L("Close"), #selector(NSWindow.performClose(_:)), "w"),
-        it(L("Minimize"), #selector(NSWindow.performMiniaturize(_:)), "m"),
+        it(L("Minimize"), #selector(NSWindow.performMiniaturize(_:)), "m"), .separator(),
+        it(L("Bring All to Front"), #selector(NSApplication.arrangeInFront(_:))),
     ])
+    NSApp.windowsMenu = main.items.last?.submenu   // AppKit adds the window list and the system's tiling items
     return main
 }
