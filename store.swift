@@ -156,6 +156,15 @@ final class Store {
         set { run("INSERT OR REPLACE INTO settings(key, value) VALUES ('keep', ?)", [newValue.rawValue]) }
     }
 
+    /// A plain setting by key (the panel's place per screen, …): nil when never set.
+    func setting(_ key: String) -> String? {
+        query("SELECT value FROM settings WHERE key = ?", [key], { text($0, 0) }).first ?? nil
+    }
+
+    func setSetting(_ key: String, _ value: String) {
+        run("INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)", [key, value])
+    }
+
     // MARK: SQLite plumbing
 
     struct StoreError: Error { let message: String }

@@ -227,6 +227,62 @@ func unit() {
               && restingTop(.bottom, height: 400, on: sc) - 400 == sc.visibleFrame.minY + screenGap, "top and bottom inside the visible frame")
     }
 
+    // Drag and snap (place.swift): magnets at top, middle, bottom; the sideways rubber band; the settle spring;
+    // the place remembered per screen.
+    if let main = NSScreen.main {
+        let gdir = tmpDir("snap")
+        let gs = try! Store(dir: gdir)
+        for i in 0..<4 { let (e, it) = prepare(textSnap("snap \(i)"), dir: gdir, at: now.addingTimeInterval(Double(i)))!; gs.add(e, it) }
+        let dc = PanelController(store: gs, monitor: nil, onScreen: false)
+        dc.screen = main
+        check(dc.placeFor(main) == .middle, "the middle until moved")
+        dc.setBox(height: dc.contentHeight(), top: restingTop(.middle, height: dc.contentHeight(), on: main))
+        let sn = dc.snap!
+        let (tp, md, bt) = (sn.detents[0], sn.detents[1], sn.detents[2])
+        check(tp > md && md > bt, "places in order \(sn.detents)")
+        check(abs(sn.shown(md + 5) - md) < 1.5 && abs(sn.shown(md + sn.reach) - (md + sn.reach)) < 1e-6, "a place holds a small pull; free past its reach")
+        let ys = stride(from: bt - 80, through: tp + 80, by: 1).map(sn.shown)
+        check(zip(ys, ys.dropFirst()).allSatisfy { $0 <= $1 + 1e-9 } && zip(ys, ys.dropFirst()).allSatisfy { $1 - $0 < 2.01 },
+              "no jump and no reversal anywhere along the way")
+        let tight = Snap(detents: [908, 820, 726])   // a 720 pt panel on a 13-inch Air
+        let ty = stride(from: 700.0, through: 930.0, by: 0.5).map { tight.shown(CGFloat($0)) }
+        check(tight.reach == 44 && zip(ty, ty.dropFirst()).allSatisfy { $1 >= $0 && $1 - $0 < 1.1 }, "close places: smaller reach, still no jump")
+        check(sn.shown(tp + 500) < tp + 30 && sn.shown(bt - 500) > bt - 30, "past top and bottom: a short rubber band")
+        check(abs(sn.band(5000, limit: Snap.sideways)) < Snap.sideways && sn.band(20, limit: Snap.sideways) > 5, "sideways: gives, at most \(Snap.sideways)")
+        Ticker.manual = true
+        // From the middle up to the top: one tap when the top catches, settles there, remembered.
+        dc.dragBegin()
+        for raw in stride(from: md, through: tp + 4, by: 4) { dc.dragMove(raw: raw, sideways: 12, snap: sn) }
+        check(dc.hapticTaps == 1 && dc.dragX > 0, "one alignment tap at the top (\(dc.hapticTaps)); pulled sideways \(dc.dragX)")
+        dc.dragEnd(velocity: 400, snap: sn)
+        for _ in 0..<60 { Ticker.advance(1.0 / 60) }
+        check(dc.top == tp && dc.dragX == 0 && dc.placeFor(main) == .top, "settled at the top, centred, remembered (\(dc.top) vs \(tp))")
+        // A small pull down from the top springs back.
+        dc.dragBegin(); dc.dragMove(raw: tp - 25, sideways: 0, snap: sn)
+        check(dc.top > tp - 12, "a small pull lags behind the pointer (\(tp - dc.top) pt for 25)")
+        dc.dragEnd(velocity: 0, snap: sn)
+        for _ in 0..<60 { Ticker.advance(1.0 / 60) }
+        check(dc.top == tp, "…and springs back")
+        // Let go between middle and bottom: the spring's shape (Spotlight: about 0.5 s, a small overshoot).
+        dc.dragBegin(); dc.dragMove(raw: md - 100, sideways: 0, snap: sn)
+        dc.dragEnd(velocity: 0, snap: sn)
+        var path: [CGFloat] = [dc.top]
+        for _ in 0..<60 { Ticker.advance(1.0 / 60); path.append(dc.top) }
+        let over = (path.max() ?? md) - md
+        let within = path.firstIndex { abs($0 - md) < 1 } ?? 99
+        print(String(format: "settle from 100 pt: overshoot %.1f pt, within 1 pt after %d ms", over, within * 1000 / 60))
+        check(over > 0.5 && over < 5 && within >= 18 && within <= 36 && path.last == md,
+              "settle: overshoot \(String(format: "%.1f", over)) pt of 100, within 1 pt at \(within) frames (\(within * 1000 / 60) ms)")
+        // Flung down from the middle: the speed carries it to the bottom.
+        dc.dragBegin(); dc.dragMove(raw: md - 70, sideways: 0, snap: sn)
+        dc.dragEnd(velocity: -1500, snap: sn)
+        for _ in 0..<90 { Ticker.advance(1.0 / 60) }
+        check(dc.top == bt && dc.placeFor(main) == .bottom, "a fling goes on to the bottom")
+        Ticker.manual = false
+        gs.setSetting("place." + screenKey(main), "middle")
+        try? FileManager.default.removeItem(at: gdir)
+    }
+
     // Search speed: «search filtering in one frame» on a big history (5 000 entries of ~1.5 KB text).
     let sdir = tmpDir("search")
     let ss = try! Store(dir: sdir)

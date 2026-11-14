@@ -59,6 +59,7 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         view.table.delegate = self
         view.table.owner = self
         view.field.delegate = self
+        view.owner = self
         if onScreen {
             let w = Panel(view: view)
             w.delegate = self
@@ -140,7 +141,7 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     /// The height drawn now, and where the top edge is on the screen (screen points; AppKit's y grows upwards).
     private(set) var height: CGFloat = 0
     private(set) var top: CGFloat = 0
-    private(set) var screen: NSScreen?
+    var screen: NSScreen?
     private let sizeTicker = Ticker()
 
     /// Spotlight's way: the new rows are already in place (one frame), then the bottom edge moves to the new height,
@@ -176,7 +177,13 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     var dragX: CGFloat = 0
 
     /// The place chosen for this screen (drag and snap, place.swift); the middle until the person moves it.
-    func placeFor(_ s: NSScreen) -> Place { .middle }
+    func placeFor(_ s: NSScreen) -> Place { store.setting("place." + screenKey(s)).flatMap(Place.init) ?? .middle }
+
+    // Drag state (place.swift).
+    var dragCaught: Int?
+    let settleTicker = Ticker()
+    /// Counted for the tests (the trackpad's tap itself cannot be observed).
+    var hapticTaps = 0
 
     func entry(_ id: Int64) -> Entry? { all.first { $0.id == id } }
 
@@ -352,7 +359,7 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         // the place the person chose for that screen: the middle by default, his pick «посередине».
         let mouse = NSEvent.mouseLocation
         screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
-        sizeTicker.stop()
+        sizeTicker.stop(); settleTicker.stop()
         dragX = 0
         let h = contentHeight()
         setBox(height: h, top: screen.map { restingTop(placeFor($0), height: h, on: $0) } ?? 0)
@@ -587,6 +594,25 @@ final class PanelView: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    // MARK: taken by its edge
+
+    weak var owner: PanelController?
+
+    /// Spotlight's panel is taken by its edges (SpotlightUIInternal's TouchWindowDragEdges): here everything that
+    /// is not the search text or a row's body: the field row around the text, the footer, and the band at each side
+    /// of the list outside the rows' highlight.
+    override func hitTest(_ p: NSPoint) -> NSView? {
+        guard let hit = super.hitTest(p) else { return nil }
+        let q = convert(p, from: superview)
+        if field.frame.contains(q) { return hit }
+        let list = scroll.frame
+        if list.contains(q) && q.x > list.minX + listInset && q.x < list.maxX - listInset { return hit }
+        return self
+    }
+
+    override func acceptsFirstMouse(for e: NSEvent?) -> Bool { true }
+    override func mouseDown(with e: NSEvent) { owner?.drag(from: e) }
 
     /// «4 объекта · 3 381 символ · 519 слов · ≈ 2 737 токенов · 6,2 МБ»: the count bold, the rest secondary.
     func setFacts(_ f: Facts?, note: String?) {
