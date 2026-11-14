@@ -176,7 +176,6 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         let x = s.visibleFrame.midX - panelSize.width / 2 + dragX
         w.setFrame(NSRect(x: x - panelMargin, y: t - h - panelMargin, width: panelSize.width + 2 * panelMargin,
                           height: h + 2 * panelMargin), display: true)
-        w.invalidateShadow()
     }
 
     /// A sideways pull while dragging (rubber band); 0 at rest: the panel is always centred across.
@@ -516,7 +515,9 @@ final class Panel: NSPanel {
                    backing: .buffered, defer: false)
         isOpaque = false
         backgroundColor = .clear
-        hasShadow = true
+        // No window shadow: Liquid Glass draws its own, and the window server's shadow of that soft shape drew a
+        // dark hairline ring ~8 pt outside the glass (on-screen trial of v0.1, 2026-11-14).
+        hasShadow = false
         level = .floating
         isFloatingPanel = true
         hidesOnDeactivate = false

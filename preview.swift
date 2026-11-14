@@ -142,7 +142,6 @@ final class PreviewController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         picture.wantsLayer = true
         picture.layer?.cornerRadius = corner
         picture.layer?.masksToBounds = true
-        window?.invalidateShadow()
     }
 
     /// The live content drawn once into a picture (Quick Look's own content is out of process and draws nothing
@@ -433,7 +432,9 @@ final class PreviewWindow: NSPanel {
         super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         isOpaque = false
         backgroundColor = .clear
-        hasShadow = true
+        // No window shadow: Liquid Glass draws its own, and the window server's shadow of that soft shape drew a
+        // dark hairline ring ~8 pt outside the glass (on-screen trial of v0.1, 2026-11-14).
+        hasShadow = false
         level = .floating
         hidesOnDeactivate = false
         isReleasedWhenClosed = false

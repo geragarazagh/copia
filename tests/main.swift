@@ -183,6 +183,21 @@ func unit() {
     check(kc.sel.order == [shown0[2], shown0[3]], "↓ ↓ from the top, then ⇧↓ \(kc.sel.order)")
     check(key("c", 8) && kpb.string(forType: .string) == "item 3\nitem 2", "⌘C writes the picked rows in one item: \(kpb.string(forType: .string) ?? "nil")")
     check(!key("c", 8, [.command, .shift]), "⇧⌘C is not ours")
+    // Real key events through the window (never shown): ↓ from the field picks the first row, Space previews it.
+    func press(_ ch: String, _ code: UInt16) {
+        let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: kc.window!.windowNumber,
+                                 context: nil, characters: ch, charactersIgnoringModifiers: ch, isARepeat: false, keyCode: code)!
+        kc.window!.sendEvent(e)
+    }
+    kc.sel.clear(); kc.selectionChanged()
+    let firstResponder = kc.window!.makeFirstResponder(kc.view.field)
+    kc.preview.host = Flipped(frame: NSRect(x: 0, y: 0, width: 1728, height: 1117))
+    press("\u{F701}", 125)
+    check(kc.sel.order == [shown0[0]], "↓ as a real key event picks the first row \(kc.sel.order)")
+    press(" ", 49)
+    check(kc.preview.isOpen, "Space as a real key event opens the preview")
+    press(" ", 49)
+    kc.preview.dismiss()
     kpb.releaseGlobally()
 
     // ⌥⌘C registers (Carbon, no permission), and is let go at once.
