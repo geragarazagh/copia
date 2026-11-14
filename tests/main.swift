@@ -406,7 +406,56 @@ func unit() {
     check(!FileManager.default.fileExists(atPath: fresh.path), "paste files: all at launch")
 
     for d in [dir, fdir, ddir, sdir, pdir] { try? FileManager.default.removeItem(at: d) }
+    browserTests()
     finish("unit")
+}
+
+/// The big window's logic without a screen: panes, sort, the pick order, delete, Recently Deleted, the hot key text.
+func browserTests() {
+    let dir = tmpDir("browser")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let (st, ids) = seeded(dir, mockSpecs())
+    let b = BrowserController(store: st, monitor: nil)
+    b.pasteboard = NSPasteboard(name: .init("com.geragaraza.clip.test.b\(getpid())"))
+    b.open(pane: .text); b.open(pane: .all)
+    check(b.shown.count == ids.count, "All shows every entry: \(b.shown.count)")
+    let count = { (p: Pane) -> Int in b.open(pane: p); return b.shown.count }
+    check(count(.text) == 5, "Text: the five texts, got \(count(.text))")
+    check(count(.links) == 1, "Links: one")
+    check(count(.colors) == 2, "Colors: two")
+    check(count(.video) == 1, "Video: the mp4 file")
+    check(count(.audio) == 1, "Audio: the m4a file")
+    check(count(.images) == 6, "Images: picture data and picture files, got \(count(.images))")
+    check(count(.files) == 4, "Files: every Finder copy, got \(count(.files))")
+    b.open(pane: .all)
+    b.setSort(.size, ascending: false)
+    check(zip(b.shown, b.shown.dropFirst()).allSatisfy { $0.bytes >= $1.bytes }, "sorted by size, biggest first")
+    b.setSort(.date, ascending: false)
+    check(zip(b.shown, b.shown.dropFirst()).allSatisfy { $0.copied >= $1.copied }, "sorted by date, newest first")
+    let s = b.shown.map(\.id)
+    b.selectionChanged(to: [s[3]]); b.selectionChanged(to: [s[3], s[0]]); b.selectionChanged(to: [s[3], s[0], s[5]])
+    check(b.order == [s[3], s[0], s[5]], "picks keep their order: \(b.order)")
+    b.selectionChanged(to: [s[0], s[5]])
+    check(b.order == [s[0], s[5]], "an unpicked one leaves the order")
+    b.selectAll(nil)
+    check(b.order == b.shown.sorted { $0.copied < $1.copied }.map(\.id), "⌘A: the order of copying, oldest first")
+    b.selectionChanged(to: [s[1], s[2]])
+    b.copy(nil)
+    check(b.pasteboard.pasteboardItems?.count ?? 0 >= 1, "⌘C writes the picks")
+    b.selectionChanged(to: [s[1]])
+    b.moveToRecentlyDeleted(nil)
+    check(b.shown.count == ids.count - 1 && st.entries(deleted: true).map(\.id) == [s[1]], "⌘⌫ into Recently Deleted")
+    check(b.order == [s[2]], "the next one takes its place")
+    b.open(pane: .deleted)
+    check(b.shown.map(\.id) == [s[1]], "Recently Deleted lists it")
+    b.selectionChanged(to: [s[1]])
+    b.putBack(nil)
+    check(st.entries(deleted: true).isEmpty && st.entries().count == ids.count, "Put Back returns it")
+    st.delete([s[4]]); st.erase([s[4]])
+    check(!st.entries().contains { $0.id == s[4] } && !st.entries(deleted: true).contains { $0.id == s[4] }, "Delete Immediately removes it for good")
+    check(HotKey.standard.text.hasPrefix("⌥⌘"), "the hot key reads ⌥⌘C: \(HotKey.standard.text)")
+    check(HotKey("8:2304") == HotKey(code: 8, mods: 2304), "a stored hot key reads back")
+    b.pasteboard.releaseGlobally()
 }
 
 // MARK: capture

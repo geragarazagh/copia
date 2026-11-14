@@ -54,6 +54,8 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     var menuRow: Int?
     /// Where ⌘C writes: the general pasteboard; a private one in tests.
     var pasteboard = NSPasteboard.general
+    /// ⌘, : the big window at Settings (set by the app).
+    var openBrowser: ((Pane) -> Void)?
     /// Off-screen renders draw the selection as in a focused window.
     var forceFocus = false
     /// Slows every animation by this factor, to step its frames in a test (CLIP_SLOW).
@@ -333,6 +335,7 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         case ("z", [.command]):
             if !undoDelete() { editor?.undoManager?.undo() }
         case ("v", [.command]): editor?.paste(nil)
+        case (",", [.command]): openBrowser?(.settings)
         case ("x", [.command]): editor?.cut(nil)
         case (_, [.command]) where e.keyCode == 51:   // ⌘⌫
             if !sel.isEmpty { deleteSelection() } else { editor?.deleteToBeginningOfLine(nil) }

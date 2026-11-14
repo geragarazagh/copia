@@ -152,6 +152,13 @@ final class Store {
         run("PRAGMA incremental_vacuum")
     }
 
+    /// Removes for good (Recently Deleted's «Delete Immediately…»); the files no row names any more go at the next purge.
+    func erase(_ ids: [Int64]) {
+        run("BEGIN")
+        for id in ids { run("DELETE FROM entries WHERE id = ?", [id]) }
+        run("COMMIT")
+    }
+
     // MARK: editing (the Space preview)
 
     /// An edited text replaces the entry's first item: RTF when it carries styling, always the plain text. The copy

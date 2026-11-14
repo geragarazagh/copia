@@ -97,28 +97,30 @@ extension PanelController: NSMenuDelegate {
         NSWorkspace.shared.open(urls, withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration())
     }
 
-    /// Real files for an entry: its own files, its pictures as PNG files, or (to open a text) the text as a file;
-    /// made in paste/, which lives 24 h, like the files of a copy.
-    func fileURLs(_ e: Entry, forOpening: Bool = false) -> [URL] {
-        let furl = NSPasteboard.PasteboardType.fileURL.rawValue, png = NSPasteboard.PasteboardType.png.rawValue
-        let reps = store.reps(e.id)
-        let own = reps.compactMap { $0.first { $0.type == furl } }.compactMap { store.data($0).flatMap { String(data: $0, encoding: .utf8) }.flatMap(URL.init(string:)) }
-        if !own.isEmpty { return own }
-        let folder = store.dir.appendingPathComponent("paste").appendingPathComponent(UUID().uuidString)
-        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let pics = reps.compactMap { $0.first { $0.type == png && $0.file != nil } }
-        if !pics.isEmpty {
-            return pics.enumerated().map { k, r in
-                let dst = folder.appendingPathComponent((pics.count == 1 ? L("Image") : "\(L("Image")) \(k + 1)") + ".png")
-                try? FileManager.default.copyItem(at: store.dir.appendingPathComponent(r.file!), to: dst)
-                return dst
-            }
+    func fileURLs(_ e: Entry, forOpening: Bool = false) -> [URL] { entryFiles(e, store: store, forOpening: forOpening) }
+}
+
+/// Real files for an entry: its own files, its pictures as PNG files, or (to open a text) the text as a file;
+/// made in paste/, which lives 24 h, like the files of a copy.
+func entryFiles(_ e: Entry, store: Store, forOpening: Bool = false) -> [URL] {
+    let furl = NSPasteboard.PasteboardType.fileURL.rawValue, png = NSPasteboard.PasteboardType.png.rawValue
+    let reps = store.reps(e.id)
+    let own = reps.compactMap { $0.first { $0.type == furl } }.compactMap { store.data($0).flatMap { String(data: $0, encoding: .utf8) }.flatMap(URL.init(string:)) }
+    if !own.isEmpty { return own }
+    let folder = store.dir.appendingPathComponent("paste").appendingPathComponent(UUID().uuidString)
+    try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let pics = reps.compactMap { $0.first { $0.type == png && $0.file != nil } }
+    if !pics.isEmpty {
+        return pics.enumerated().map { k, r in
+            let dst = folder.appendingPathComponent((pics.count == 1 ? L("Image") : "\(L("Image")) \(k + 1)") + ".png")
+            try? FileManager.default.copyItem(at: store.dir.appendingPathComponent(r.file!), to: dst)
+            return dst
         }
-        guard forOpening else { return [] }
-        let rtf = reps.first?.first { $0.type == NSPasteboard.PasteboardType.rtf.rawValue }
-        let name = String(e.title.prefix(40)).replacingOccurrences(of: "/", with: "-").trimmingCharacters(in: .whitespaces)
-        let dst = folder.appendingPathComponent((name.isEmpty ? L("Text") : name) + (rtf != nil ? ".rtf" : ".txt"))
-        if let rtf, let d = store.data(rtf) { try? d.write(to: dst) } else { try? Data(e.text.utf8).write(to: dst) }
-        return [dst]
     }
+    guard forOpening else { return [] }
+    let rtf = reps.first?.first { $0.type == NSPasteboard.PasteboardType.rtf.rawValue }
+    let name = String(e.title.prefix(40)).replacingOccurrences(of: "/", with: "-").trimmingCharacters(in: .whitespaces)
+    let dst = folder.appendingPathComponent((name.isEmpty ? L("Text") : name) + (rtf != nil ? ".rtf" : ".txt"))
+    if let rtf, let d = store.data(rtf) { try? d.write(to: dst) } else { try? Data(e.text.utf8).write(to: dst) }
+    return [dst]
 }

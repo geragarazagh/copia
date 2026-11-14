@@ -4,6 +4,7 @@
 // order in an accent badge (ClipBook's, the one he chose).
 import AppKit
 import UniformTypeIdentifiers
+import QuickLookThumbnailing
 
 final class EntryCell: NSTableCellView {
     static let id = NSUserInterfaceItemIdentifier("entry")
@@ -122,18 +123,39 @@ final class Badge: NSView {
 /// Pictures for the rows, made once per entry and kept while the app runs.
 final class Thumbs {
     static let shared = Thumbs()
-    private var cache: [Int64: NSImage] = [:]
+    private var cache: [String: NSImage] = [:]
     private var apps: [String: NSImage] = [:]
 
-    func thumb(_ e: Entry, store: Store) -> NSImage {
-        if let i = cache[e.id] { return i }
-        let i = make(e, store: store)
-        cache[e.id] = i
+    /// The picture of an entry at `side` points (the panel's rows: 40; the big window's icons: up to 128).
+    func thumb(_ e: Entry, store: Store, side: CGFloat = 40) -> NSImage {
+        let key = "\(e.id)-\(Int(side))"
+        if let i = cache[key] { return i }
+        let i = make(e, store: store, side: side)
+        cache[key] = i
+        if side >= 48 { finderThumb(e, key: key, side: side) }
         return i
     }
 
-    /// An entry changed (edited, reverted): its picture is made again.
-    func forget(_ id: Int64) { cache[id] = nil }
+    /// A file copied in Finder gets Finder's own picture of it in the big window (a video's frame, a PDF's page, a
+    /// document's first page), made by Quick Look off the main thread; until it comes the file's icon stands in.
+    private func finderThumb(_ e: Entry, key: String, side: CGFloat) {
+        guard e.kind == .files, e.count == 1, let p = e.thumb, FileManager.default.fileExists(atPath: p),
+              UTType(filenameExtension: (p as NSString).pathExtension)?.conforms(to: .image) != true else { return }
+        let r = QLThumbnailGenerator.Request(fileAt: URL(fileURLWithPath: p), size: CGSize(width: side, height: side),
+                                             scale: 2, representationTypes: .thumbnail)
+        QLThumbnailGenerator.shared.generateBestRepresentation(for: r) { rep, _ in
+            guard let rep else { return }
+            DispatchQueue.main.async {
+                self.cache[key] = rep.nsImage
+                NotificationCenter.default.post(name: Thumbs.ready, object: nil)
+            }
+        }
+    }
+
+    static let ready = Notification.Name("ClipThumbReady")
+
+    /// An entry changed (edited, reverted): its pictures are made again.
+    func forget(_ id: Int64) { for k in cache.keys where k.hasPrefix("\(id)-") { cache[k] = nil } }
 
     func app(_ id: String?) -> NSImage? {
         guard let id else { return nil }
@@ -145,22 +167,23 @@ final class Thumbs {
         return i
     }
 
-    private func make(_ e: Entry, store: Store) -> NSImage {
-        let s: CGFloat = 40
+    private func make(_ e: Entry, store: Store, side s: CGFloat) -> NSImage {
+        let px = Int(s * 4)
         switch e.kind {
         case .image:
             if e.count > 1 {   // several images in one copy: a small stack of the first three
                 let png = NSPasteboard.PasteboardType.png.rawValue
                 let pics = store.reps(e.id).compactMap { $0.first { $0.type == png }?.file }.prefix(3)
-                    .compactMap { picture(store.dir.appendingPathComponent($0)) }.map { NSImage(cgImage: $0, size: .zero) }
+                    .compactMap { picture(store.dir.appendingPathComponent($0), px: px) }.map { NSImage(cgImage: $0, size: .zero) }
                 if pics.count > 1 { return stack(pics.map { ($0, true) }, side: s) }
             }
-            if let f = e.thumb, let cg = picture(store.dir.appendingPathComponent(f)) {
+            if let f = e.thumb, let cg = picture(store.dir.appendingPathComponent(f), px: px) {
                 return rounded(NSImage(cgImage: cg, size: .zero), side: s)
             }
-            return icon(.image)
-        case .text: return icon(.plainText)
-        case .link: return icon(UTType("com.apple.web-internet-location") ?? .url)
+            return icon(.image, s)
+        case .text where s >= 48: return page(e.text, side: s)
+        case .text: return icon(.plainText, s)
+        case .link: return icon(UTType("com.apple.web-internet-location") ?? .url, s)
         case .color:
             let (r, g, b) = rgb(e.title) ?? (128, 128, 128)
             let c = NSColor(srgbRed: CGFloat(r) / 255, green: CGFloat(g) / 255, blue: CGFloat(b) / 255, alpha: 1)
@@ -179,7 +202,7 @@ final class Thumbs {
                 if i < paths.count {
                     let p = paths[i]
                     if UTType(filenameExtension: (p as NSString).pathExtension)?.conforms(to: .image) == true,
-                       let cg = picture(URL(fileURLWithPath: p)) { return (NSImage(cgImage: cg, size: .zero), true) }
+                       let cg = picture(URL(fileURLWithPath: p), px: px) { return (NSImage(cgImage: cg, size: .zero), true) }
                     if FileManager.default.fileExists(atPath: p) { return (NSWorkspace.shared.icon(forFile: p), false) }
                 }
                 let ext = (names[min(i, names.count - 1)] as NSString).pathExtension
@@ -190,11 +213,33 @@ final class Thumbs {
                 return isPicture ? rounded(im, side: s) : im
             }
             return stack((0..<min(3, e.count)).map(card), side: s)
-        case .other: return icon(.data)
+        case .other: return icon(.data, s)
         }
     }
 
-    private func icon(_ t: UTType) -> NSImage { NSWorkspace.shared.icon(for: t) }
+    /// A text as Finder pictures a text file: a white page with its first lines in tiny type.
+    private func page(_ t: String, side s: CGFloat) -> NSImage {
+        NSImage(size: NSSize(width: s, height: s), flipped: true) { _ in
+            let h = s * 0.94, w = h * 0.77
+            let r = NSRect(x: (s - w) / 2, y: (s - h) / 2, width: w, height: h)
+            let sh = NSShadow()
+            sh.shadowBlurRadius = 1.5; sh.shadowOffset = NSSize(width: 0, height: -0.5)
+            sh.shadowColor = NSColor.black.withAlphaComponent(0.3)
+            NSGraphicsContext.saveGraphicsState()
+            sh.set()
+            NSColor.white.setFill()
+            NSBezierPath(rect: r).fill()
+            NSGraphicsContext.restoreGraphicsState()
+            let p = NSMutableParagraphStyle(); p.lineBreakMode = .byWordWrapping
+            let size = max(2.2, s / 30)
+            NSAttributedString(string: String(t.prefix(900)), attributes: [
+                .font: NSFont.systemFont(ofSize: size), .foregroundColor: NSColor(white: 0.25, alpha: 1), .paragraphStyle: p,
+            ]).draw(with: r.insetBy(dx: w * 0.1, dy: h * 0.08), options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+            return true
+        }
+    }
+
+    private func icon(_ t: UTType, _ s: CGFloat) -> NSImage { let i = NSWorkspace.shared.icon(for: t); i.size = NSSize(width: s, height: s); return i }
 
     /// The paths of a files entry's items, in order (from its stored file URLs).
     private func filePaths(_ e: Entry, store: Store) -> [String] {
@@ -242,11 +287,11 @@ final class Thumbs {
         }
     }
 
-    /// A small copy of a picture file (160 px: 40 pt at 2× and a margin), read without decoding the whole picture.
-    private func picture(_ u: URL) -> CGImage? {
+    /// A small copy of a picture file (4 px per point: 2× and a margin), read without decoding the whole picture.
+    private func picture(_ u: URL, px: Int) -> CGImage? {
         guard let src = CGImageSourceCreateWithURL(u as CFURL, nil) else { return nil }
         return CGImageSourceCreateThumbnailAtIndex(src, 0, [
-            kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 160,
+            kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: px,
             kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary)
     }
 

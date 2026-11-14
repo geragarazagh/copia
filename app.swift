@@ -24,7 +24,9 @@ final class App: NSObject, NSApplicationDelegate {
     let store: Store
     let monitor = Monitor()
     var panel: PanelController!
+    var browser: BrowserController!
     private var hotKey: EventHotKeyRef?
+    private var handlerInstalled = false
     private var lastOtherApp: String?
     private let prepQueue = DispatchQueue(label: "com.geragaraza.clip.prepare", qos: .utility)
     private var housekeeping: Timer?
@@ -44,6 +46,15 @@ final class App: NSObject, NSApplicationDelegate {
         Clip.cleanPasteFolder(store, all: true)
         store.purge()
         panel = PanelController(store: store, monitor: monitor)
+        browser = BrowserController(store: store, monitor: monitor)
+        browser.panelReload = { [weak self] in self?.panel.reload() }
+        browser.onHotKeyChange = { [weak self] in
+            guard let self, !trial else { return }
+            self.unregisterHotKey()
+            self.registerHotKey()
+        }
+        panel.openBrowser = { [weak self] p in self?.panel.hide(); self?.browser.show(p) }
+        NSApp.mainMenu = makeMainMenu(settings: #selector(openSettings), target: self)
 
         // The copying app, when it does not say so itself: the app in front, or, when the panel is in front, the one
         // before it (Pesty's lesson: the poll lags the copy).
@@ -65,6 +76,7 @@ final class App: NSObject, NSApplicationDelegate {
                 DispatchQueue.main.async {
                     self.store.add(e, items)
                     self.panel.reload()
+                    if self.browser.isVisible { self.browser.reload() }
                 }
             }
         }
@@ -73,6 +85,10 @@ final class App: NSObject, NSApplicationDelegate {
         hotKeyAction = { [weak self] in self?.panel.toggle() }
         if !trial { registerHotKey() }
         if CommandLine.arguments.contains("--show") { panel.show() }
+        if let i = CommandLine.arguments.firstIndex(of: "--browser") {
+            let p = i + 1 < CommandLine.arguments.count ? Pane(rawValue: CommandLine.arguments[i + 1]) : nil
+            browser.show(p)
+        }
 
         // Every hour: what the keep-history setting and Recently Deleted let go, and paste files older than a day.
         housekeeping = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
@@ -82,24 +98,32 @@ final class App: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Opening the app again shows the panel. Hook for later: the big window (⌘, and opening the app; clipboard.md,
-    /// «His pick») takes this over.
+    /// Opening the app again (Finder, Spotlight, Launchpad) shows the big window at the pane last used; ⌘, opens it
+    /// at Settings (clipboard.md, «His pick»). Closing every window leaves the app running.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
-        panel.show()
+        browser.show(browser.pane == .settings ? .all : nil)
         return false
     }
 
-    /// ⌥⌘C, his key (ClipBook's, used daily). Carbon's RegisterEventHotKey needs no permission. Hook for later: the
-    /// key is set in the big window, stored in the database's settings.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    @objc func openSettings() { panel.hide(); browser.show(.settings) }
+
+    func applicationWillTerminate(_ n: Notification) { browser.saveLayout() }
+
+    /// ⌥⌘C by default, his key (ClipBook's, used daily); set in Settings, kept in the database's settings. Carbon's
+    /// RegisterEventHotKey needs no permission.
     @discardableResult
     func registerHotKey() -> OSStatus {
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
+        // The handler once; the key itself may be registered again after a change in Settings.
+        if !handlerInstalled { handlerInstalled = true; InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
             DispatchQueue.main.async { hotKeyAction?() }
             return noErr
-        }, 1, &spec, nil, nil)
+        }, 1, &spec, nil, nil) }
         let id = EventHotKeyID(signature: OSType(0x434C_4950), id: 1)   // 'CLIP'
-        return RegisterEventHotKey(UInt32(kVK_ANSI_C), UInt32(cmdKey | optionKey), id, GetApplicationEventTarget(), 0, &hotKey)
+        let k = store.hotKey
+        return RegisterEventHotKey(k.code, k.mods, id, GetApplicationEventTarget(), 0, &hotKey)
     }
 
     func unregisterHotKey() { if let h = hotKey { UnregisterEventHotKey(h); hotKey = nil } }
