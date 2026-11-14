@@ -9,6 +9,7 @@
 //   clip-tests render APP THEME OUT [motion]   the panel drawn in a window under the desktop (never on the screen),
 //                                   captured with screencapture -l; «motion» steps the leaving animation 20 × slower
 import AppKit
+import AVKit
 import UniformTypeIdentifiers
 
 let argv = CommandLine.arguments
@@ -936,6 +937,46 @@ func linkTests() {
     check(o2.entries().first { $0.id == oid }?.url == "https://github.com/", "a version 1 store gains the link columns")
 }
 
+// MARK: the Quick Look crash of 0.4 (on a real screen: run in the agents' own session, ./test cs)
+
+/// His two crash reports of 0.4 (2026-11-14 17:38, 17:39): closing the panel while a Quick Look preview was open
+/// aborted in PreviewController.dismiss() → -[QLPreviewView deactivate]. This drives the real panel and preview windows
+/// through every way the preview ends, many times over: the leaving panel, Esc then the leaving panel, the arrows
+/// moving to another item, dismiss twice, a video's player. 0.4 aborts in the first round; a pass means no abort.
+func qlCrash() {
+    let dir = tmpDir("ql")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let (st, ids) = seeded(dir, mockSpecs())
+    let pc = PanelController(store: st, monitor: nil)
+    let image = ids[12], video = ids[6], shot2 = ids[2], text = ids[7]
+    func row(_ id: Int64) -> Int { pc.rows.firstIndex { if case .entry(let i) = $0 { return pc.shown[i].id == id }; return false }! }
+    func open(_ id: Int64) { pc.mouseDown(row: row(id), flags: [], clicks: 1); pc.togglePreview(); _ = wait(0.35) { false } }
+    func show() { pc.show(); _ = wait(0.1) { false } }
+    func hide() { pc.hide(); _ = wait(0.25) { !pc.isVisible && pc.window?.isVisible != true } }
+    for round in 0..<12 {
+        for id in [image, video] {
+            show(); open(id); check(pc.preview.isOpen, "round \(round): the preview opened"); hide()           // the panel leaves with it open
+            show(); open(id); pc.closePreview(); _ = wait(0.3) { false }; hide()                              // Esc first, then the panel
+            show(); open(id); pc.move(1, extending: false); _ = wait(0.1) { false }; hide()                   // the arrows load another item
+            show(); open(id); pc.preview.dismiss(); pc.preview.dismiss(); hide()                              // twice
+            show(); open(shot2); pc.mouseDown(row: row(id), flags: [], clicks: 1); _ = wait(0.1) { false }; hide()
+        }
+        show(); open(text); hide()
+    }
+    check(!pc.preview.isOpen, "the preview is closed at the end")
+    // The video plays in AVKit's view with the inline controls (a scrubber): the player is there and seekable.
+    show(); open(video)
+    let pv = pc.preview.playerViewForTest
+    check(pv?.controlsStyle == .inline, "a video shows AVKit's inline controls")
+    if let p = pv?.player {
+        p.seek(to: CMTime(seconds: 1, preferredTimescale: 600))
+        _ = wait(1) { p.currentTime().seconds >= 0.9 }
+        check(abs(p.currentTime().seconds - 1) < 0.1, "the video can be scrubbed: at \(p.currentTime().seconds) s")
+    } else { check(false, "the video has a player") }
+    hide()
+    check(pc.preview.playerViewForTest == nil, "the player is let go when the panel leaves")
+}
+
 // MARK: main
 
 _ = NSApplication.shared
@@ -950,6 +991,7 @@ case "copy":
     copyTests(pb); pb.releaseGlobally(); finish("copy")
 case "general": general(); finish("general")
 case "links": linkTests(); finish("links")
+case "qlcrash": qlCrash(); finish("qlcrash")
 case "readtiff" where argv.count == 3:   // copy's helper: another process asking for the TIFF
     let d = NSPasteboard(name: .init(argv[2])).pasteboardItems?.first?.data(forType: .tiff)
     print(d.flatMap { NSBitmapImageRep(data: $0) }?.pixelsWide ?? 0); exit(0)

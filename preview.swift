@@ -7,6 +7,7 @@
 // Space or Esc closes; the arrows move the selection and the preview follows.
 import AppKit
 import Quartz
+import AVKit
 import UniformTypeIdentifiers
 
 let previewWidth: CGFloat = 640
@@ -24,6 +25,12 @@ final class PreviewController: NSObject, NSTextViewDelegate, NSWindowDelegate {
     private var textView: NSTextView?
     private var textScroll: NSScrollView?
     private var quickLook: QLPreviewView?
+    /// A video plays in AVKit's own view with the standard inline controls (play, the scrubber, time, volume), as
+    /// Quick Look and QuickTime show it: Quick Look's compact view played a video but gave no scrubber (his review of
+    /// 0.4, 2026-11-14).
+    private var playerView: AVPlayerView?
+    /// The video's first frame: what the preview shows while it grows, and the shape it takes.
+    private var videoFrame: NSImage?
     private var card: NSView?            // a link's own card (link.swift), at Apple's size
     static let cardInset: CGFloat = 20
     private let facts = NSTextField(labelWithString: "")
@@ -108,14 +115,37 @@ final class PreviewController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         }
     }
 
-    /// Gone in one frame (the panel is leaving, or another item took its place).
+    /// Gone in one frame (the panel is leaving, or another item took its place). Safe to call when nothing is open
+    /// and any number of times: the panel's leaving motion always ends here, also after the preview closed by itself.
     func dismiss() {
+        guard isOpen else { return }
         save()
         ticker.stop()
+        releaseQuickLook()
+        releasePlayer()
         window?.orderOut(nil)
         box.removeFromSuperview()
-        quickLook?.close()
         entry = nil
+    }
+
+    /// Quick Look's view is closed exactly once and while it is still in its window, then let go. 0.4 crashed here
+    /// (his two reports, 2026-11-14 17:38 and 17:39: -[QLPreviewView deactivate] asserting «internalState ==
+    /// QLPreviewActivatedInternalState»): dismiss() took the view out of its window first, which deactivates it, then
+    /// called close(), a second deactivate; and it kept the closed view, so the panel's next leaving motion, which
+    /// always calls dismiss(), closed it again. QLPreviewView.close() is not idempotent.
+    private func releaseQuickLook() {
+        guard let ql = quickLook else { return }
+        quickLook = nil
+        if ql.window != nil { ql.close() }
+        ql.removeFromSuperview()
+    }
+
+    private func releasePlayer() {
+        guard let pv = playerView else { return }
+        playerView = nil
+        pv.player?.pause()
+        pv.player = nil
+        pv.removeFromSuperview()
     }
 
     /// The rectangle the preview grows from: the final shape, scaled down into the row's picture, so every frame is
@@ -158,7 +188,7 @@ final class PreviewController: NSObject, NSTextViewDelegate, NSWindowDelegate {
             content.cacheDisplay(in: content.bounds, to: rep)
             im.addRepresentation(rep)
         }
-        if quickLook != nil, let e = entry, let stand = standIn(e) {
+        if quickLook != nil || playerView != nil, let e = entry, let stand = standIn(e) {
             im.lockFocusFlipped(true)
             let area = NSRect(x: 0, y: 0, width: size.width, height: size.height - previewFooter).insetBy(dx: 12, dy: 12)
             let a = stand.size.width / max(1, stand.size.height)
@@ -171,6 +201,7 @@ final class PreviewController: NSObject, NSTextViewDelegate, NSWindowDelegate {
 
     private func standIn(_ e: Entry) -> NSImage? {
         guard let u = previewURL(e) else { return nil }
+        if isMovie(u), let f = videoFrame { return f }
         if UTType(filenameExtension: u.pathExtension)?.conforms(to: .image) == true, let i = NSImage(contentsOf: u) { return i }
         return NSWorkspace.shared.icon(forFile: u.path)
     }
@@ -232,6 +263,10 @@ final class PreviewController: NSObject, NSTextViewDelegate, NSWindowDelegate {
             let w = previewWidth - 24, h = w * CGFloat(e.height) / CGFloat(e.width)
             return max(200, min(560, h + 24 + previewFooter))
         }
+        if playerView != nil, let f = videoFrame, f.size.width > 0 {
+            let h = previewWidth * f.size.height / f.size.width
+            return max(200, min(560, h + previewFooter))
+        }
         return 420
     }
 
@@ -240,9 +275,11 @@ final class PreviewController: NSObject, NSTextViewDelegate, NSWindowDelegate {
     private func load(_ e: Entry) {
         entry = e
         edited = false
+        releaseQuickLook()   // first, while Quick Look's view is still in its window
+        releasePlayer()
+        videoFrame = nil
         for v in content.subviews { v.removeFromSuperview() }
         textView = nil; textScroll = nil; card = nil
-        quickLook?.close(); quickLook = nil
         let size = NSSize(width: previewWidth, height: 400)
         content.frame = NSRect(origin: .zero, size: size)
         if let c = linkCard(e, store: store) {
@@ -268,6 +305,17 @@ final class PreviewController: NSObject, NSTextViewDelegate, NSWindowDelegate {
             tv.autoresizingMask = [.width]
             content.addSubview(sv)
             textView = tv; textScroll = sv
+        } else if let u = previewURL(e), isMovie(u) {
+            let pv = AVPlayerView(frame: NSRect(x: 0, y: 0, width: size.width, height: size.height - previewFooter))
+            pv.controlsStyle = .inline
+            pv.showsFullScreenToggleButton = false
+            pv.player = AVPlayer(url: u)
+            let g = AVAssetImageGenerator(asset: AVURLAsset(url: u))
+            g.appliesPreferredTrackTransform = true
+            g.maximumSize = CGSize(width: previewWidth * 2, height: previewWidth * 2)
+            videoFrame = (try? g.copyCGImage(at: .zero, actualTime: nil)).map { NSImage(cgImage: $0, size: .zero) }
+            content.addSubview(pv)
+            playerView = pv
         } else if let u = previewURL(e), let ql = QLPreviewView(frame: NSRect(x: 0, y: 0, width: size.width, height: size.height - previewFooter), style: .compact) {
             ql.previewItem = u as NSURL
             ql.shouldCloseWithWindow = false
@@ -291,6 +339,7 @@ final class PreviewController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         let main = NSRect(x: 0, y: 0, width: w, height: max(0, h - previewFooter))
         textScroll?.frame = main
         quickLook?.frame = main
+        playerView?.frame = main
         if let c = card { c.frame.origin = NSPoint(x: ((w - c.frame.width) / 2).rounded(), y: ((main.height - c.frame.height) / 2).rounded()) }
         footLine.frame = NSRect(x: 0, y: h - previewFooter, width: w, height: 1)
         let rw = revert.frame.width
@@ -421,6 +470,7 @@ final class PreviewController: NSObject, NSTextViewDelegate, NSWindowDelegate {
     var textForTest: NSTextView? { textView }
     var factsText: String { facts.stringValue }
     var revertShown: Bool { !revert.isHidden }
+    var playerViewForTest: AVPlayerView? { playerView }
     func step(_ dt: Double) { Ticker.advance(dt) }
 }
 
@@ -490,3 +540,5 @@ final class PreviewWindow: NSPanel {
     // Esc while editing: the edit is kept and the preview closes into its row; the panel takes the keys again.
     override func cancelOperation(_ sender: Any?) { owner?.panel?.closePreview() }
 }
+
+func isMovie(_ u: URL) -> Bool { UTType(filenameExtension: u.pathExtension)?.conforms(to: .movie) == true }
