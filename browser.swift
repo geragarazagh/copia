@@ -604,6 +604,8 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
             let icon = NSWorkspace.shared.icon(forFile: a.path)
             icon.size = NSSize(width: 16, height: 16)
             it.image = icon
+            // macOS 27 hides menu images unless the item asks (seen on 27.2 in the agents' session, 2026-11-14)
+            if #available(macOS 27.0, *) { it.preferredImageVisibility = .visible }
             if a == def && apps.count > 1 { m.addItem(.separator()) }
         }
         return m
