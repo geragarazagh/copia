@@ -5,11 +5,15 @@
 import AppKit
 import SQLite3
 
-/// How long the history is kept, as Apple orders such lists (Messages: 30 Days, 1 Year, Forever).
+/// How long the history is kept: STT's scale (0.3, his decision 2026-11-12: one scale in all his apps, short to long,
+/// Apple's words) without its «Don't Keep», which a clipboard history has no use for (his word 2026-11-14, Copia 0.6).
+/// Raw values of 0.4-0.5 («30d», «1y», «forever») kept, so a stored choice stays as it was.
 enum Keep: String, CaseIterable {
-    case days30 = "30d", year1 = "1y", forever = "forever"
+    case day1 = "1d", days7 = "7d", days30 = "30d", year1 = "1y", forever = "forever"
     var seconds: TimeInterval? {
-        switch self { case .days30: 30 * 86400; case .year1: 365 * 86400; case .forever: nil }
+        switch self {
+        case .day1: 86400; case .days7: 7 * 86400; case .days30: 30 * 86400; case .year1: 365 * 86400; case .forever: nil
+        }
     }
 }
 
@@ -274,6 +278,12 @@ final class Store {
     }
 
     // MARK: settings
+
+    /// Entries, kept or in Recently Deleted, that a shorter keep period would remove for good.
+    func olderThan(_ k: Keep, now: Date = Date()) -> Int {
+        guard let s = k.seconds else { return 0 }
+        return query("SELECT COUNT(*) FROM entries WHERE copied < ?", [now.timeIntervalSince1970 - s], { int($0, 0) }).first.map(Int.init) ?? 0
+    }
 
     var keep: Keep {
         get { query("SELECT value FROM settings WHERE key = 'keep'", [], { text($0, 0) }).first.flatMap { $0.flatMap(Keep.init) } ?? .days30 }

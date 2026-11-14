@@ -1,29 +1,10 @@
 // One row of the list: a picture of what was copied, its text or name, when and how big, and the copying app's icon.
 // Picked rows take the person's own selection colour (System Settings: accent and highlight colour), grey when the
 // panel does not have the keyboard, as every Mac list does; picked in a set of two or more, they carry their paste
-// order in an accent badge (ClipBook's, the one he chose).
+// order as a plain number at the row's end.
 import AppKit
 import UniformTypeIdentifiers
 import QuickLookThumbnailing
-
-/// How the paste order of a multi-selection is shown (his review of 0.4: «Apple has nothing like the 1, 2, 3 circles;
-/// drop them or find a more elegant, system-like way»). The variants for his look are switched by COPIA_BADGE; the
-/// default is the one Claude picked (clipboard.md, «0.5: decisions»).
-enum OrderMark: String {
-    /// A plain number at the row's trailing end, in the row's own text colour, where the copying app's icon sits:
-    /// typography, not a badge (Mail's and Reminders' counts sit there the same way).
-    case trailing
-    /// No mark: the order is kept and pasted, not drawn (Finder).
-    case none
-    /// Apple's own ordered selection: the Photos picker (PHPicker, selection .ordered) numbers its picks in an accent
-    /// circle at the picture's corner; 0.4's badge, made smaller and moved to the bottom-right corner as there.
-    case photos
-    /// No marks on the rows: the picks stand in a small strip in the footer, in paste order (risky).
-    case strip
-    /// 0.4: an accent circle at the picture's top-left (ClipBook's).
-    case badge
-    nonisolated(unsafe) static var current = OrderMark(rawValue: ProcessInfo.processInfo.environment["COPIA_BADGE"] ?? "") ?? .trailing
-}
 
 final class EntryCell: NSTableCellView {
     static let id = NSUserInterfaceItemIdentifier("entry")
@@ -31,7 +12,6 @@ final class EntryCell: NSTableCellView {
     private let title = NSTextField(labelWithString: "")
     private let meta = NSTextField(labelWithString: "")
     private let appIcon = NSImageView()
-    private let badge = Badge()
     private let number = NSTextField(labelWithString: "")
     private var selected = false, focused = true
 
@@ -57,11 +37,6 @@ final class EntryCell: NSTableCellView {
         number.alignment = .right
         number.isHidden = true
         for v in [thumb, title, meta, appIcon, number] as [NSView] { addSubview(v) }
-        switch OrderMark.current {
-        case .photos: badge.frame = NSRect(x: x0 + rowPicture - 11, y: (rowH + rowPicture) / 2 - 11, width: 16, height: 16)
-        default: badge.frame = NSRect(x: x0 - 7, y: (rowH - rowPicture) / 2 - 6, width: 18, height: 18)
-        }
-        addSubview(badge)
         layoutText()
     }
 
@@ -91,12 +66,12 @@ final class EntryCell: NSTableCellView {
         let strong = s && f
         title.textColor = strong ? .alternateSelectedControlTextColor : .labelColor
         meta.textColor = strong ? .alternateSelectedControlTextColor.withAlphaComponent(0.8) : .secondaryLabelColor
-        let mark = OrderMark.current
-        badge.number = (mark == .badge || mark == .photos) ? n : nil
-        badge.isHidden = badge.number == nil
+        // The paste order of a set of two or more: a plain number at the row's end, in the row's own text colour, where
+        // the copying app's icon sits (his pick 2026-11-14 ~19:05 of four variants; 0.4's accent circles are gone:
+        // «Apple has nothing like them»). Typography, as Mail's and Reminders' counts.
         number.stringValue = n.map(String.init) ?? ""
         number.textColor = strong ? .alternateSelectedControlTextColor : .labelColor
-        number.isHidden = !(mark == .trailing && n != nil)
+        number.isHidden = n == nil
         appIcon.isHidden = !number.isHidden
         needsDisplay = true
     }
@@ -107,7 +82,7 @@ final class EntryCell: NSTableCellView {
         NSBezierPath(roundedRect: bounds.insetBy(dx: listInset, dy: 0), xRadius: 10, yRadius: 10).fill()
     }
 
-    override func viewDidChangeEffectiveAppearance() { needsDisplay = true; badge.needsDisplay = true }
+    override func viewDidChangeEffectiveAppearance() { needsDisplay = true }
 
     // Tests: what the row shows.
     var titleFrame: NSRect { title.frame }
@@ -133,7 +108,8 @@ func metaText(_ e: Entry) -> String {
     return p.joined(separator: " · ")
 }
 
-/// The order badge: an accent circle, a white digit, a thin white ring that keeps it readable on an accent row. From
+/// The order badge of the big window's grids (views.swift, badgeView): an accent circle, a white digit, a thin white
+/// ring that keeps it readable on an accent picture. From
 /// 10 on it grows into a capsule to the right, its left edge and height kept, as Apple's count badges do (on 27.2 a
 /// ⌘A of 22 entries drew «22» touching the ring, 2026-11-14).
 final class Badge: NSView {

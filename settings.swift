@@ -66,7 +66,11 @@ extension Store {
 }
 
 extension Keep {
-    var title: String { switch self { case .days30: L("30 Days"); case .year1: L("1 Year"); case .forever: L("Forever") } }
+    var title: String {
+        switch self {
+        case .day1: L("1 Day"); case .days7: L("7 Days"); case .days30: L("30 Days"); case .year1: L("1 Year"); case .forever: L("Forever")
+        }
+    }
 }
 
 /// Open at Login: the agent in the bundle (./build writes it; main.swift, --login), as in the other apps.
@@ -95,7 +99,11 @@ final class SettingsView: FlippedLayout {
             o.onHotKeyChange?()
         }
         login.target = self; login.action = #selector(loginChanged)
-        for k in Keep.allCases { keep.addItem(withTitle: k.title); keep.lastItem?.representedObject = k.rawValue }
+        // The periods, then the open end after a separator, as STT's Mac pop-up groups them.
+        for k in Keep.allCases {
+            if k == .forever { keep.menu?.addItem(.separator()) }
+            keep.addItem(withTitle: k.title); keep.lastItem?.representedObject = k.rawValue
+        }
         keep.target = self; keep.action = #selector(keepChanged)
         keep.isBordered = false
         // The panel's place, as the Dock's «Position on screen»: the seven places (place.swift), also reached by
@@ -123,7 +131,7 @@ final class SettingsView: FlippedLayout {
         guard let o = owner else { return }
         recorder.key = o.store.hotKey
         login.state = loginItem.status == .enabled ? .on : .off
-        keep.selectItem(at: Keep.allCases.firstIndex(of: o.store.keep) ?? 0)
+        keep.selectItem(withTitle: o.store.keep.title)
         let p = NSScreen.main.flatMap { o.store.setting("place." + screenKey($0)).flatMap(Place.init) } ?? .standard
         position.selectItem(withTitle: p.title)
     }
@@ -157,12 +165,26 @@ final class SettingsView: FlippedLayout {
         refresh()
     }
 
+    /// A shorter period removes older copies for good, so it asks first when there are any, as Messages does when
+    /// «Keep Messages» is shortened (0.5 removed them at once, with no way back).
     @objc private func keepChanged() {
         guard let o = owner, let k = (keep.selectedItem?.representedObject as? String).flatMap(Keep.init) else { return }
-        o.store.keep = k
-        o.store.purge()
-        o.reload()
-        o.panelReload()
+        let apply = {
+            o.store.keep = k
+            o.store.purge()
+            o.reload()
+            o.panelReload()
+        }
+        let n = o.store.olderThan(k)
+        guard n > 0, let w = window else { apply(); return }
+        let a = NSAlert()
+        a.messageText = String(format: L("Delete %@ immediately?"), counted(n, "object|objects"))
+        a.informativeText = L("You can’t undo this action.")
+        a.addButton(withTitle: L("Delete")).hasDestructiveAction = true
+        a.addButton(withTitle: L("Cancel"))
+        a.beginSheetModal(for: w) { r in
+            if r == .alertFirstButtonReturn { apply() } else { self.refresh() }
+        }
     }
 
     @objc private func clearHistory() { owner?.clearHistory() }

@@ -151,8 +151,7 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
         let s = store.setting("browser.sort").flatMap(SortKey.init) ?? .date
         sort = s
         ascending = store.setting("browser.ascending").map { $0 == "1" } ?? s.ascendingFirst
-        iconSize = store.setting("browser.iconSize").flatMap(Double.init).map { CGFloat($0) }
-            ?? ProcessInfo.processInfo.environment["COPIA_ICON"].flatMap(Double.init).map { CGFloat($0) } ?? 64   // COPIA_ICON: variants
+        iconSize = store.setting("browser.iconSize").flatMap(Double.init).map { CGFloat($0) } ?? 64
         columns = store.setting("browser.columns").map { $0.split(separator: ",").compactMap { SortKey(rawValue: String($0)) } }
             ?? [.date, .size, .kind, .app]
         super.init()
@@ -257,10 +256,10 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
     /// The window's first size and its smallest, computed from what it shows rather than picked (his review of 0.4:
     /// 0.4 opened at 1100 × 680 with a fixed 620 × 380 minimum; HIG, Windows: «choose an initial size that minimizes
     /// empty areas», and a minimum where nothing overlaps). Default: the sidebar and five columns of icons, three rows
-    /// under a day's title. Smallest: three columns, two rows, and room for the toolbar so the title is never cut.
-    /// COPIA_COLUMNS sets the default's columns for the variants of his look.
+    /// under a day's title (his pick of 0.5's variants, ~19:05). Smallest: three columns, two rows, and room for the
+    /// toolbar so the title is never cut.
     func windowSizes() -> (NSSize, NSSize) {
-        let n = Int(ProcessInfo.processInfo.environment["COPIA_COLUMNS"] ?? "") ?? 5
+        let n = 5
         let side = Self.sidebarWidth + 1
         let rowH = IconItem.size(side: iconSize).height, lines: CGFloat = 12
         let chrome: CGFloat = 52 + ContentController.statusH + 34 + 8 + 16   // toolbar, status bar, a day's title, insets

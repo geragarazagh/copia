@@ -10,9 +10,9 @@ import AppKit
 
 /// The width and the tallest the panel gets: Spotlight's own, measured on this Mac (its clipboard list, 2026-11-14:
 /// 640 pt wide, 545 pt at most with nine rows, then the list scrolls). 0.4 was 760 × 720, the round-3 mockup's size;
-/// his review: too wide, «like Spotlight's width». COPIA_TALL=1 lets it grow to the screen's height instead (a variant
-/// for his look, «Copia 0.5 — варианты»).
-let panelSize = NSSize(width: 640, height: ProcessInfo.processInfo.environment["COPIA_TALL"] != nil ? 10_000 : 546)
+/// his review: too wide, «like Spotlight's width»; his pick of 0.5's variants (~19:05): Spotlight's height, not the
+/// screen's.
+let panelSize = NSSize(width: 640, height: 546)
 let panelCorner: CGFloat = 22
 /// Room around the panel inside its window: the glass's own shadow and the 3 % growth of the leaving animation must
 /// end inside the window. At 16 pt the window's edge cut the shadow where it was still 6 levels dark under the panel,
@@ -56,8 +56,6 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     private var hiding = false
     /// The Space preview (preview.swift).
     lazy var preview: PreviewController = { let p = PreviewController(store: store); p.panel = self; return p }()
-    /// Typed into the search since the selection was last made: then Space is a space, not the preview.
-    private var typedSinceSelection = false
     /// The row the open context menu belongs to (the share sheet comes out of it).
     var menuRow: Int?
     /// Where ⌘C writes: the general pasteboard; a private one in tests.
@@ -271,9 +269,7 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         if let m = monitor, m.denied {
             view.setFacts(nil, note: L("Reading the clipboard is off: Privacy & Security > Paste from Other Apps"))
         } else if !sel.isEmpty {
-            let picks = sel.order.compactMap(entry)
-            view.setFacts(Facts(picks), note: nil,
-                          strip: OrderMark.current == .strip && picks.count > 1 ? picks.map { Thumbs.shared.thumb($0, store: store, side: rowPicture) } : [])
+            view.setFacts(Facts(sel.order.compactMap(entry)), note: nil)
         } else {
             view.setFacts(nil, note: shown.isEmpty ? "" : counted(shown.count, "object|objects"))
         }
@@ -281,7 +277,6 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
 
     /// The selection changed: only the rows' colours, badges and the facts line change, in the same frame.
     func selectionChanged(scrollTo id: Int64? = nil) {
-        typedSinceSelection = false
         noteShown = nil
         defer { if preview.isOpen, let c = sel.cursor ?? sel.order.last, c != preview.entry?.id, let e = entry(c) { openPreview(e) } }
         for r in 0..<rows.count {
@@ -476,7 +471,6 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
 
     func controlTextDidChange(_ n: Notification) {
         filter()
-        typedSinceSelection = true
     }
 
     // MARK: showing and hiding
@@ -547,7 +541,6 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
 
     /// The rows' colours follow whether the panel has the keys.
     private func redrawSelection() {
-        let keep = typedSinceSelection
         let open = preview.isOpen
         if !open { selectionChanged() } else {
             for r in 0..<rows.count {
@@ -556,7 +549,6 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
                 }
             }
         }
-        typedSinceSelection = keep
     }
 
     // MARK: preview
@@ -900,17 +892,9 @@ final class PanelView: NSView {
     }
 
     /// «4 объекта · 3 381 символ · 519 слов · ≈ 2 737 токенов · 6,2 МБ»: the count bold, the rest secondary.
-    func setFacts(_ f: Facts?, note: String?, strip: [NSImage] = []) {
+    func setFacts(_ f: Facts?, note: String?) {
         let font = NSFont.monospacedDigitSystemFont(ofSize: 12.5, weight: .regular)
         let s = NSMutableAttributedString()
-        // The risky order mark: the picks themselves, small, in paste order, before the facts.
-        for (k, im) in strip.enumerated() {
-            let a = NSTextAttachment()
-            a.image = im
-            a.bounds = NSRect(x: 0, y: -5, width: 18, height: 18)
-            s.append(NSAttributedString(attachment: a))
-            s.append(NSAttributedString(string: k == strip.count - 1 ? "   " : " ", attributes: [.font: font]))
-        }
         defer {
             let p = NSMutableParagraphStyle(); p.alignment = .center; p.lineBreakMode = .byTruncatingTail
             s.addAttribute(.paragraphStyle, value: p, range: NSRange(location: 0, length: s.length))

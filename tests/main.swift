@@ -143,6 +143,20 @@ func unit() {
     st.keep = .forever
     let reopened = try! Store(dir: dir)
     check(reopened.keep == .forever, "keep setting stored")
+    do {   // a shorter period asks first when it would remove copies (settings.swift, keepChanged): how many
+        let kdir = tmpDir("keep")
+        let (ks, _) = seeded(kdir, [(textSnap("old"), Date().addingTimeInterval(-3 * 86400)), (textSnap("new"), Date())])
+        check(ks.olderThan(.day1) == 1 && ks.olderThan(.days7) == 0 && ks.olderThan(.forever) == 0, "copies a shorter period would remove")
+        try? FileManager.default.removeItem(at: kdir)
+    }
+    reopened.keep = .days30
+    // 0.6: STT's scale without «Don't Keep», short to long, Forever last; 0.5's stored «30d», «1y», «forever» read as before.
+    check(Keep.allCases == [.day1, .days7, .days30, .year1, .forever] && Keep.allCases.map(\.rawValue).suffix(3) == ["30d", "1y", "forever"],
+          "keep scale: 1 Day, 7 Days, 30 Days, 1 Year, Forever; old values kept")
+    check(Keep.allCases.map(\.title) == ["1 Day", "7 Days", "30 Days", "1 Year", "Forever"].map(L), "keep titles are STT's words")
+    check(Keep.day1.seconds == 86400 && Keep.days7.seconds == 7 * 86400, "1 day and 7 days")
+    reopened.setSetting("keep", "1y"); check(reopened.keep == .year1, "a stored 1 Year stays 1 Year")
+    reopened.setSetting("keep", "forever"); check(reopened.keep == .forever, "a stored Forever stays Forever")
     reopened.keep = .days30
     reopened.purge(now: now.addingTimeInterval(3600))
     check(reopened.entries(deleted: true).isEmpty, "Recently Deleted emptied after 30 days")
@@ -864,21 +878,6 @@ func render(app: String, theme: String, out: String, mode: String) {
     }
     let place = ProcessInfo.processInfo.environment["COPIA_RENDER_PLACE"].flatMap(Place.init)
     if let place { pc.view.frame.origin = origin(place, pc.view.frame.height) }
-    if mode == "places", let place {
-        // The risky variant: while the panel is dragged, the other six places show as outlines, as macOS 15's window
-        // tiling shows where a window will go.
-        for p in Place.allCases where p != place {
-            // Each place as the search field would land there: the field's own capsule, where the panel's top goes.
-            let o = origin(p, fieldH)
-            let g = NSView(frame: NSRect(x: o.x, y: o.y, width: panelSize.width, height: fieldH))
-            g.wantsLayer = true
-            g.layer?.cornerRadius = fieldH / 2; g.layer?.cornerCurve = .continuous
-            g.layer?.borderWidth = 2
-            g.layer?.borderColor = NSColor.white.withAlphaComponent(0.8).cgColor
-            g.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.18).cgColor
-            root.addSubview(g)
-        }
-    }
     root.addSubview(pc.view)
     win.contentView = root
     win.setFrame(NSRect(x: 0, y: 0, width: SW, height: SH), display: true)

@@ -197,9 +197,9 @@ final class Items {
 
 /// The order badge of a picked item in the big window's grids: Apple's own ordered selection in a grid of pictures,
 /// the Photos picker's numbered accent circle at the picture's bottom-right corner (PHPicker, selection .ordered).
-/// The panel's rows show the order as a plain trailing number instead (OrderMark); with the marks off, none here.
+/// The panel's rows show the order as a plain trailing number instead.
 func badgeView() -> Badge { let b = Badge(); b.isHidden = true; return b }
-func gridBadge(_ n: Int?) -> Int? { [.none, .strip].contains(OrderMark.current) ? nil : n }
+func gridBadge(_ n: Int?) -> Int? { n }
 
 // MARK: icons
 
