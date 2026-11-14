@@ -6,61 +6,84 @@ import AppKit
 import UniformTypeIdentifiers
 import QuickLookThumbnailing
 
+/// How the paste order of a multi-selection is shown (his review of 0.4: «Apple has nothing like the 1, 2, 3 circles;
+/// drop them or find a more elegant, system-like way»). The variants for his look are switched by COPIA_BADGE; the
+/// default is the one Claude picked (clipboard.md, «0.5: decisions»).
+enum OrderMark: String {
+    /// A plain number at the row's trailing end, in the row's own text colour, where the copying app's icon sits:
+    /// typography, not a badge (Mail's and Reminders' counts sit there the same way).
+    case trailing
+    /// No mark: the order is kept and pasted, not drawn (Finder).
+    case none
+    /// Apple's own ordered selection: the Photos picker (PHPicker, selection .ordered) numbers its picks in an accent
+    /// circle at the picture's corner; 0.4's badge, made smaller and moved to the bottom-right corner as there.
+    case photos
+    /// No marks on the rows: the picks stand in a small strip in the footer, in paste order (risky).
+    case strip
+    /// 0.4: an accent circle at the picture's top-left (ClipBook's).
+    case badge
+    nonisolated(unsafe) static var current = OrderMark(rawValue: ProcessInfo.processInfo.environment["COPIA_BADGE"] ?? "") ?? .trailing
+}
+
 final class EntryCell: NSTableCellView {
     static let id = NSUserInterfaceItemIdentifier("entry")
     private let thumb = NSImageView()
-    private let title = NSTextField(wrappingLabelWithString: "")
+    private let title = NSTextField(labelWithString: "")
     private let meta = NSTextField(labelWithString: "")
     private let appIcon = NSImageView()
     private let badge = Badge()
+    private let number = NSTextField(labelWithString: "")
     private var selected = false, focused = true
-    private var twoLines = false
 
     override var isFlipped: Bool { true }
 
     init() {
         super.init(frame: NSRect(x: 0, y: 0, width: panelSize.width, height: rowH))
         identifier = Self.id
-        let x0 = listInset + 12
-        thumb.frame = NSRect(x: x0, y: (rowH - 40) / 2, width: 40, height: 40)
+        let x0 = listInset + 10
+        thumb.frame = NSRect(x: x0, y: (rowH - rowPicture) / 2, width: rowPicture, height: rowPicture)
         thumb.imageScaling = .scaleProportionallyUpOrDown
-        appIcon.frame = NSRect(x: panelSize.width - listInset - 12 - 22, y: (rowH - 22) / 2, width: 22, height: 22)
+        appIcon.frame = NSRect(x: panelSize.width - listInset - 12 - 20, y: (rowH - 20) / 2, width: 20, height: 20)
         appIcon.imageScaling = .scaleProportionallyUpOrDown
-        title.maximumNumberOfLines = 2
-        title.lineBreakMode = .byWordWrapping   // a truncating mode would make it one line; the last line still ends in «…»
+        // One line each, ending in «…» (0.4 wrapped a text into two lines with a word-wrapping label, and a long word,
+        // a link or a key with no spaces, ran out of the panel with no «…»: his recording of a 743-character copy).
+        title.lineBreakMode = .byTruncatingTail
         title.cell?.truncatesLastVisibleLine = true
+        title.font = .systemFont(ofSize: 14, weight: .medium)
         title.isSelectable = false
         meta.font = .systemFont(ofSize: 12)
         meta.lineBreakMode = .byTruncatingTail
-        for v in [thumb, title, meta, appIcon] as [NSView] { addSubview(v) }
-        badge.frame = NSRect(x: x0 - 7, y: (rowH - 40) / 2 - 6, width: 20, height: 20)
+        number.font = .monospacedDigitSystemFont(ofSize: 14, weight: .semibold)
+        number.alignment = .right
+        number.isHidden = true
+        for v in [thumb, title, meta, appIcon, number] as [NSView] { addSubview(v) }
+        switch OrderMark.current {
+        case .photos: badge.frame = NSRect(x: x0 + rowPicture - 11, y: (rowH + rowPicture) / 2 - 11, width: 16, height: 16)
+        default: badge.frame = NSRect(x: x0 - 7, y: (rowH - rowPicture) / 2 - 6, width: 18, height: 18)
+        }
         addSubview(badge)
+        layoutText()
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
     func show(_ e: Entry, store: Store) {
-        thumb.image = Thumbs.shared.thumb(e, store: store)
+        thumb.image = Thumbs.shared.thumb(e, store: store, side: rowPicture)
         appIcon.image = Thumbs.shared.app(e.app)
-        twoLines = e.kind == .text
-        title.font = .systemFont(ofSize: 14, weight: twoLines ? .regular : .medium)
-        title.maximumNumberOfLines = twoLines ? 2 : 1
         title.stringValue = shownTitle(e)
         meta.stringValue = metaText(e)
-        layoutText()
     }
 
+    /// Spotlight's row: the picture, then the name over one grey line of facts, both ending in «…» before the
+    /// trailing icon; no space kept for anything else, so the facts follow the time with no gap.
     private func layoutText() {
-        let x = listInset + 12 + 40 + 12
-        // The text ends under the Space preview's edge, so no «…» of a row peeks out beside the open preview (seen on
-        // macOS 27.2, 2026-11-14: the last 10 pt of long titles showed between the preview and the app icons).
-        let w = min(appIcon.frame.minX - 8, (panelSize.width + previewWidth) / 2 - 4) - x
-        let lineH: CGFloat = 17
-        let th = twoLines ? min(2 * lineH, title.sizeThatFits(NSSize(width: w, height: 100)).height) : lineH
-        let mh: CGFloat = 15, gap: CGFloat = 2
+        let x = listInset + 10 + rowPicture + 10
+        let w = appIcon.frame.minX - 10 - x
+        let th: CGFloat = 18, mh: CGFloat = 15, gap: CGFloat = 1
         let top = ((rowH - th - gap - mh) / 2).rounded()
         title.frame = NSRect(x: x, y: top, width: w, height: th)
         meta.frame = NSRect(x: x, y: top + th + gap, width: w, height: mh)
+        number.frame = NSRect(x: appIcon.frame.maxX - 40, y: (rowH - 18) / 2, width: 40, height: 18)
     }
 
     func update(selected s: Bool, badge n: Int?, focused f: Bool) {
@@ -68,8 +91,13 @@ final class EntryCell: NSTableCellView {
         let strong = s && f
         title.textColor = strong ? .alternateSelectedControlTextColor : .labelColor
         meta.textColor = strong ? .alternateSelectedControlTextColor.withAlphaComponent(0.8) : .secondaryLabelColor
-        badge.number = n
-        badge.isHidden = n == nil
+        let mark = OrderMark.current
+        badge.number = (mark == .badge || mark == .photos) ? n : nil
+        badge.isHidden = badge.number == nil
+        number.stringValue = n.map(String.init) ?? ""
+        number.textColor = strong ? .alternateSelectedControlTextColor : .labelColor
+        number.isHidden = !(mark == .trailing && n != nil)
+        appIcon.isHidden = !number.isHidden
         needsDisplay = true
     }
 
@@ -80,6 +108,11 @@ final class EntryCell: NSTableCellView {
     }
 
     override func viewDidChangeEffectiveAppearance() { needsDisplay = true; badge.needsDisplay = true }
+
+    // Tests: what the row shows.
+    var titleFrame: NSRect { title.frame }
+    var titleText: String { title.stringValue }
+    var numberShown: String? { number.isHidden ? nil : number.stringValue }
 }
 
 /// «7:34 · 3456 × 2234 · 6,2 МБ», «7:31 · 1 162 символа», «7:27 · https://…», «7:30 · RGB 10 · 132 · 255».

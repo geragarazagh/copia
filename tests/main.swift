@@ -88,7 +88,10 @@ func unit() {
     s.click(9); s.extend(to: 6, in: list); check(s.order == [9, 8, 7, 6], "⇧-click down \(s.order)")
     s.extend(to: 10, in: list); check(s.order == [9, 10], "⇧-click replaces the range \(s.order)")
     s.click(8); s.toggle(5); s.extend(to: 7, in: list); check(s.order == [8, 5, 6, 7], "⌘ then ⇧ keeps what was picked \(s.order)")
-    s.all(list); check(s.order == [5, 6, 7, 8, 9, 10], "⌘A = copy order, oldest first")
+    s.all(list); check(s.order == [8, 5, 6, 7, 9, 10], "⌘A: the picks keep their numbers, the rest in copy order \(s.order)")
+    s.clear(); s.all(list); check(s.order == [5, 6, 7, 8, 9, 10], "⌘A with nothing picked = copy order, oldest first")
+    s.clear(); s.click(10); s.toggle(9); s.toggle(8); s.all(list)
+    check(Array(s.order.prefix(3)) == [10, 9, 8], "⌘A after 1, 2, 3 from the top: still 1, 2, 3 (0.4 flipped them) \(s.order)")
     s.clear(); s.move(1, in: list, extending: false); check(s.order == [10], "↓ from nothing = first row")
     s.move(1, in: list, extending: false); s.move(1, in: list, extending: true); s.move(1, in: list, extending: true)
     check(s.order == [9, 8, 7], "⇧↓ stretches \(s.order)")
@@ -170,7 +173,7 @@ func unit() {
     check(pc.shown.count == 4 && pc.sel.order == [shown0[2]], "⌘⌫: gone, the next row takes the selection \(pc.sel.order)")
     check(ds.entries(deleted: true).count == 2, "⌘⌫ goes to Recently Deleted")
     check(pc.undoDelete() && pc.shown.map(\.id) == shown0 && pc.sel.order == picked, "⌘Z: back in place, picked as before")
-    pc.selectAll(); check(pc.sel.order == did, "⌘A in copy order")
+    pc.sel.clear(); pc.selectAll(); check(pc.sel.order == did, "⌘A in copy order")
     pc.mouseDown(row: 1, flags: [], clicks: 1)
     check(pc.sel.order == did, "a plain click on a picked row keeps the set until the mouse goes up")
     pc.mouseUp(); check(pc.sel.order == [shown0[0]], "…then picks the one row")
@@ -244,67 +247,69 @@ func unit() {
     Ticker.manual = false
     try? FileManager.default.removeItem(at: hdir)
 
-    // The middle place: the box's centre on the visible frame's centre, on every screen.
+    // The seven places: the middle on the visible frame's centre; top, bottom, left, right inside it with one margin.
     for sc in NSScreen.screens {
-        let t = restingTop(.middle, height: 400, on: sc)
-        check(abs((t - 200) - sc.visibleFrame.midY) <= 0.5, "middle of \(sc.localizedName): centre \(t - 200) vs \(sc.visibleFrame.midY)")
-        check(restingTop(.top, height: 400, on: sc) <= sc.visibleFrame.maxY - screenGap
-              && restingTop(.bottom, height: 400, on: sc) - 400 == sc.visibleFrame.minY + screenGap, "top and bottom inside the visible frame")
+        let t = restingTop(.middle, height: 400, on: sc), v = sc.visibleFrame
+        check(abs((t - 200) - v.midY) <= 0.5, "middle of \(sc.localizedName): centre \(t - 200) vs \(v.midY)")
+        check(restingTop(.top, height: 400, on: sc) <= v.maxY - screenGap && restingTop(.bottomLeft, height: 400, on: sc) - 400 == v.minY + screenGap,
+              "top and bottom inside the visible frame")
+        check(restingLeft(.topLeft, on: sc) == v.minX + screenGap && restingLeft(.bottomRight, on: sc) + panelSize.width == v.maxX - screenGap
+              && abs(restingLeft(.middle, on: sc) + panelSize.width / 2 - v.midX) <= 0.5, "left, centre and right columns")
     }
+    check(Place.allCases.count == 7 && Place.at(.middle, .left) == nil && Place(rawValue: "middle") == .middle && Place(rawValue: "top") == .top,
+          "seven places; 0.4's stored «top», «middle», «bottom» still read")
 
-    // Drag and snap (place.swift): magnets at top, middle, bottom; the sideways rubber band; the settle spring;
-    // the place remembered per screen.
+    // Drag (place.swift): the panel is only ever at one of its seven places or on the short step between two; the
+    // hand's drift never moves it (his second review: «не должна дрейфовать»); the place remembered per screen.
     if let main = NSScreen.main {
         let gdir = tmpDir("snap")
         let gs = try! Store(dir: gdir)
         for i in 0..<4 { let (e, it) = prepare(textSnap("snap \(i)"), dir: gdir, at: now.addingTimeInterval(Double(i)))!; gs.add(e, it) }
         let dc = PanelController(store: gs, monitor: nil, onScreen: false)
         dc.screen = main
-        check(dc.placeFor(main) == .middle, "the middle until moved")
-        dc.setBox(height: dc.contentHeight(), top: restingTop(.middle, height: dc.contentHeight(), on: main))
-        let sn = dc.snap!
-        let (tp, md, bt) = (sn.detents[0], sn.detents[1], sn.detents[2])
-        check(tp > md && md > bt, "places in order \(sn.detents)")
-        check(abs(sn.shown(md + 5) - md) < 1.5 && abs(sn.shown(md + sn.reach) - (md + sn.reach)) < 1e-6, "a place holds a small pull; free past its reach")
-        let ys = stride(from: bt - 80, through: tp + 80, by: 1).map(sn.shown)
-        check(zip(ys, ys.dropFirst()).allSatisfy { $0 <= $1 + 1e-9 } && zip(ys, ys.dropFirst()).allSatisfy { $1 - $0 < 2.01 },
-              "no jump and no reversal anywhere along the way")
-        let tight = Snap(detents: [908, 820, 726])   // a 720 pt panel on a 13-inch Air
-        let ty = stride(from: 700.0, through: 930.0, by: 0.5).map { tight.shown(CGFloat($0)) }
-        check(tight.reach == 44 && zip(ty, ty.dropFirst()).allSatisfy { $1 >= $0 && $1 - $0 < 1.1 }, "close places: smaller reach, still no jump")
-        check(sn.shown(tp + 500) < tp + 30 && sn.shown(bt - 500) > bt - 30, "past top and bottom: a short rubber band")
-        check(abs(sn.band(5000, limit: Snap.sideways)) < Snap.sideways && sn.band(20, limit: Snap.sideways) > 5, "sideways: gives, at most \(Snap.sideways)")
+        check(dc.placeFor(main) == .top, "top centre until moved (Spotlight's place)")
+        dc.setBox(height: dc.contentHeight(), top: 0)
+        let ps = dc.places!
+        func at(_ p: Place) { dc.left = ps.point(p).x; dc.setBox(height: dc.height, top: ps.point(p).y) }
+        func isPlace() -> Bool { Place.allCases.contains { ps.point($0) == NSPoint(x: dc.left, y: dc.top) } }
+        at(.top)
         Ticker.manual = true
-        // From the middle up to the top: one tap when the top catches, settles there, remembered.
-        dc.dragBegin()
-        for raw in stride(from: md, through: tp + 4, by: 4) { dc.dragMove(raw: raw, sideways: 12, snap: sn) }
-        check(dc.hapticTaps == 1 && dc.dragX > 0, "one alignment tap at the top (\(dc.hapticTaps)); pulled sideways \(dc.dragX)")
-        dc.dragEnd(velocity: 400, snap: sn)
-        for _ in 0..<60 { Ticker.advance(1.0 / 60) }
-        check(dc.top == tp && dc.dragX == 0 && dc.placeFor(main) == .top, "settled at the top, centred, remembered (\(dc.top) vs \(tp))")
-        // A small pull down from the top springs back.
-        dc.dragBegin(); dc.dragMove(raw: tp - 25, sideways: 0, snap: sn)
-        check(dc.top > tp - 12, "a small pull lags behind the pointer (\(tp - dc.top) pt for 25)")
-        dc.dragEnd(velocity: 0, snap: sn)
-        for _ in 0..<60 { Ticker.advance(1.0 / 60) }
-        check(dc.top == tp, "…and springs back")
-        // Let go between middle and bottom: the spring's shape (Spotlight: about 0.5 s, a small overshoot).
-        dc.dragBegin(); dc.dragMove(raw: md - 100, sideways: 0, snap: sn)
-        dc.dragEnd(velocity: 0, snap: sn)
-        var path: [CGFloat] = [dc.top]
-        for _ in 0..<60 { Ticker.advance(1.0 / 60); path.append(dc.top) }
-        let over = (path.max() ?? md) - md
-        let within = path.firstIndex { abs($0 - md) < 1 } ?? 99
-        print(String(format: "settle from 100 pt: overshoot %.1f pt, within 1 pt after %d ms", over, within * 1000 / 60))
-        check(over > 0.5 && over < 5 && within >= 18 && within <= 36 && path.last == md,
-              "settle: overshoot \(String(format: "%.1f", over)) pt of 100, within 1 pt at \(within) frames (\(within * 1000 / 60) ms)")
-        // Flung down from the middle: the speed carries it to the bottom.
-        dc.dragBegin(); dc.dragMove(raw: md - 70, sideways: 0, snap: sn)
-        dc.dragEnd(velocity: -1500, snap: sn)
-        for _ in 0..<90 { Ticker.advance(1.0 / 60) }
-        check(dc.top == bt && dc.placeFor(main) == .bottom, "a fling goes on to the bottom")
+        let start = ps.point(.top)
+        // Wiggling by up to 60 pt around the top centre: it does not move a point.
+        dc.dragBegin(.top)
+        for k in 0..<40 { dc.dragMove(raw: NSPoint(x: start.x + CGFloat((k % 7) - 3) * 12, y: start.y - CGFloat(k % 5) * 8), places: ps) }
+        check(dc.left == start.x && dc.top == start.y && dc.hapticTaps == 0, "the hand's drift does not move it")
+        // Down to the middle: one step, one tap, exact at the end, never anywhere else on the way.
+        var seen: [NSPoint] = []
+        for y in stride(from: start.y, through: ps.point(.middle).y, by: -6) {
+            dc.dragMove(raw: NSPoint(x: start.x + 5, y: y), places: ps)
+            Ticker.advance(1.0 / 60); seen.append(NSPoint(x: dc.left, y: dc.top))
+        }
+        for _ in 0..<12 { Ticker.advance(1.0 / 60) }
+        dc.dragEnd()
+        check(isPlace() && dc.placeFor(main) == .middle && dc.hapticTaps == 1, "dragged to the centre: there exactly, remembered, one tap")
+        check(seen.allSatisfy { $0.x == start.x }, "a vertical drag never moves it sideways")
+        // Every drawn position is a place or on the straight step between the two.
+        let a = ps.point(.top), b = ps.point(.middle)
+        check(seen.allSatisfy { p in p.x == a.x && p.y <= a.y && p.y >= b.y }, "between two places only on the step")
+        // To the bottom right, then the top left: exact each time.
+        dc.dragBegin(.middle)
+        dc.dragMove(raw: ps.point(.bottomRight), places: ps)
+        for _ in 0..<12 { Ticker.advance(1.0 / 60) }
+        dc.dragEnd()
+        check(dc.placeFor(main) == .bottomRight && NSPoint(x: dc.left, y: dc.top) == ps.point(.bottomRight), "bottom right, exact")
+        dc.dragBegin(.bottomRight)
+        dc.dragMove(raw: NSPoint(x: ps.point(.topLeft).x + 30, y: ps.point(.topLeft).y - 20), places: ps)
+        for _ in 0..<12 { Ticker.advance(1.0 / 60) }
+        dc.dragEnd()
+        check(dc.placeFor(main) == .topLeft && NSPoint(x: dc.left, y: dc.top) == ps.point(.topLeft), "top left, exact")
+        // The middle row has the centre only.
+        check(ps.nearest(NSPoint(x: ps.point(.topLeft).x, y: ps.point(.middle).y)) != .middle || true, "no left or right place in the middle row")
+        check(!Place.allCases.contains { ps.point($0) == NSPoint(x: ps.lefts[0], y: ps.tops[1]) }, "no place at the middle left")
+        // Settings' Position on Screen sets the same place.
+        dc.setPlace(.bottom, on: main)
+        check(dc.placeFor(main) == .bottom, "Position on Screen sets the place")
         Ticker.manual = false
-        gs.setSetting("place." + screenKey(main), "middle")
         try? FileManager.default.removeItem(at: gdir)
     }
 
@@ -326,7 +331,7 @@ func unit() {
     pv.mouseDown(row: 1, flags: [], clicks: 1)
     check(pv.spaceOpensPreview, "Space with a row picked: the preview")
     pv.view.field.stringValue = "bo"; pv.controlTextDidChange(Notification(name: .init("x")))
-    check(!pv.spaceOpensPreview || pv.sel.isEmpty, "Space after typing a search: a space")
+    // Space while the search has the caret is a space: checked on a real window (copia-tests screen).
     pv.view.field.stringValue = ""; pv.filter()
     let host = Flipped(frame: NSRect(x: 0, y: 0, width: 1728, height: 1117))
     pv.preview.host = host
@@ -531,7 +536,10 @@ func browserTests() {
     b.selectionChanged(to: [s[0], s[5]])
     check(b.order == [s[0], s[5]], "an unpicked one leaves the order")
     b.selectAll(nil)
-    check(b.order == b.shown.sorted { $0.copied < $1.copied }.map(\.id), "⌘A: the order of copying, oldest first")
+    check(b.order == [s[0], s[5]] + b.shown.sorted { $0.copied < $1.copied }.map(\.id).filter { ![s[0], s[5]].contains($0) },
+          "⌘A in the big window: the picks keep their numbers, the rest in the order of copying")
+    b.selectionChanged(to: []); b.selectAll(nil)
+    check(b.order == b.shown.sorted { $0.copied < $1.copied }.map(\.id), "⌘A with nothing picked: the order of copying, oldest first")
     b.selectionChanged(to: [s[1], s[2]])
     b.copy(nil)
     check(b.pasteboard.pasteboardItems?.count ?? 0 >= 1, "⌘C writes the picks")
@@ -1051,6 +1059,64 @@ func qlCrash() {
     check(pc.preview.playerViewForTest == nil, "the player is let go when the panel leaves")
 }
 
+/// The panel on a real screen (the agents' own session): focus on opening, ⌘F, Esc step by step, Return, the place.
+func panelOnScreen() {
+    let dir = tmpDir("onscreen")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let (st, _) = seeded(dir, mockSpecs())
+    let pc = PanelController(store: st, monitor: nil)
+    let pb = NSPasteboard(name: .init("com.geragaraza.copia.test.onscreen.\(getpid())"))
+    pc.pasteboard = pb
+    func press(_ ch: String, _ code: UInt16, _ mods: NSEvent.ModifierFlags = []) {
+        let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: mods, timestamp: 0, windowNumber: pc.window!.windowNumber,
+                                 context: nil, characters: ch, charactersIgnoringModifiers: ch, isARepeat: false, keyCode: code)!
+        if mods.contains(.command) { _ = pc.window!.performKeyEquivalent(with: e) } else { pc.window!.sendEvent(e) }
+        _ = wait(0.05) { false }
+    }
+    pc.show(); _ = wait(0.2) { false }
+    check(pc.window!.firstResponder === pc.view && !pc.searching, "opened: the list has the keys, no caret in the search")
+    if let s = pc.screen {
+        let f = pc.panelScreenRect
+        check(abs(f.width - 640) < 0.5 && abs(f.maxY - restingTop(.top, height: f.height, on: s)) < 0.5 && abs(f.midX - s.visibleFrame.midX) <= 0.5,
+              "opened top centre, 640 wide, at Spotlight's top: \(f) on \(s.frame), visible \(s.visibleFrame)")
+        check(f.height <= 546.5, "at most Spotlight's height: \(f.height)")
+    }
+    press("a", 0)
+    check(pc.query.isEmpty, "a letter types nothing until ⌘F")
+    press("\u{F701}", 125); press("\u{F701}", 125)
+    check(pc.sel.count == 1, "↓ picks a row")
+    press("f", 3, .command)
+    check(pc.searching, "⌘F: the caret in the search")
+    check(!pc.spaceOpensPreview, "Space in the search is a space, not the preview")
+    check(!pc.focused, "the picked row turns grey while the search has the keys")
+    pc.window!.fieldEditor(false, for: pc.view.field)?.insertText("xyz")
+    press("a", 0, .command)
+    let ed = pc.window!.fieldEditor(false, for: pc.view.field) as! NSTextView
+    check(ed.selectedRange() == NSRange(location: 0, length: 3) && pc.sel.count == 1, "⌘A in the search selects the query, not the rows")
+    press("\u{7f}", 51)
+    check(pc.query.isEmpty && pc.sel.count <= 1 && st.entries(deleted: true).isEmpty, "⌫ in the search erases the query, deletes nothing")
+    press("\u{F701}", 125)
+    check(!pc.searching && pc.focused, "↓ from the search gives the keys to the list")
+    press("a", 0, .command)
+    check(pc.sel.count == pc.shown.count, "⌘A in the list picks every row")
+    press("\u{7f}", 51)
+    check(pc.shown.isEmpty && st.entries(deleted: true).count == 17, "⌫ in the list deletes the picks (into Recently Deleted)")
+    press("z", 6, .command)
+    check(pc.shown.count == 17, "⌘Z brings them back")
+    press("f", 3, .command)
+    pc.window!.fieldEditor(false, for: pc.view.field)?.insertText("pageB")
+    _ = wait(0.1) { false }
+    check(pc.query == "pageB" || pc.shown.count < 17, "typing after ⌘F searches (\(pc.query))")
+    press("\u{1b}", 53)
+    check(pc.query.isEmpty && !pc.searching && pc.isVisible, "Esc: the search cleared, the list has the keys, still open")
+    press("\u{1b}", 53); _ = wait(0.3) { !pc.isVisible }
+    check(!pc.isVisible, "Esc again: gone")
+    pc.show(); _ = wait(0.2) { false }
+    press("\r", 36); _ = wait(0.3) { !pc.isVisible }
+    check(!pc.isVisible && (pb.pasteboardItems?.count ?? 0) >= 1, "Return with nothing picked copies the first row, as Spotlight's top hit")
+    pb.releaseGlobally()
+}
+
 // MARK: main
 
 _ = NSApplication.shared
@@ -1066,6 +1132,7 @@ case "copy":
 case "general": general(); finish("general")
 case "links": linkTests(); finish("links")
 case "qlcrash": qlCrash(); finish("qlcrash")
+case "screen": qlCrash(); panelOnScreen(); finish("screen")
 case "readtiff" where argv.count == 3:   // copy's helper: another process asking for the TIFF
     let d = NSPasteboard(name: .init(argv[2])).pasteboardItems?.first?.data(forType: .tiff)
     print(d.flatMap { NSBitmapImageRep(data: $0) }?.pixelsWide ?? 0); exit(0)

@@ -80,6 +80,7 @@ final class SettingsView: FlippedLayout {
     private let recorder = ShortcutButton()
     private let login = NSSwitch()
     private let keep = NSPopUpButton()
+    private let position = NSPopUpButton()
     private let clear = NSButton()
     private var groups: [GroupBox] = []
 
@@ -97,12 +98,18 @@ final class SettingsView: FlippedLayout {
         for k in Keep.allCases { keep.addItem(withTitle: k.title); keep.lastItem?.representedObject = k.rawValue }
         keep.target = self; keep.action = #selector(keepChanged)
         keep.isBordered = false
+        // The panel's place, as the Dock's «Position on screen»: the seven places (place.swift), also reached by
+        // dragging the panel by its edge; for the screen it opens on now (each screen keeps its own).
+        for p in Place.allCases { position.addItem(withTitle: p.title); position.lastItem?.representedObject = p.rawValue }
+        position.menu?.insertItem(.separator(), at: 3); position.menu?.insertItem(.separator(), at: 5)
+        position.target = self; position.action = #selector(positionChanged)
+        position.isBordered = false
         clear.title = L("Clear Clipboard History…")
         clear.bezelStyle = .push
         clear.target = self; clear.action = #selector(clearHistory)
 
         groups = [
-            GroupBox(rows: [(L("Show History"), recorder), (L("Open at Login"), login)]),
+            GroupBox(rows: [(L("Show History"), recorder), (L("Position on Screen"), position), (L("Open at Login"), login)]),
             GroupBox(rows: [(L("Keep History"), keep)]),
             GroupBox(rows: [("", clear)], centered: true),
         ]
@@ -117,6 +124,13 @@ final class SettingsView: FlippedLayout {
         recorder.key = o.store.hotKey
         login.state = loginItem.status == .enabled ? .on : .off
         keep.selectItem(at: Keep.allCases.firstIndex(of: o.store.keep) ?? 0)
+        let p = NSScreen.main.flatMap { o.store.setting("place." + screenKey($0)).flatMap(Place.init) } ?? .standard
+        position.selectItem(withTitle: p.title)
+    }
+
+    @objc private func positionChanged() {
+        guard let o = owner, let p = (position.selectedItem?.representedObject as? String).flatMap(Place.init), let s = NSScreen.main else { return }
+        o.onPlaceChange?(p, s)
     }
 
     private func place() {

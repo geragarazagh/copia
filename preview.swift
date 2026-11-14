@@ -504,6 +504,7 @@ final class PreviewWindow: NSPanel {
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+    override func constrainFrameRect(_ r: NSRect, to s: NSScreen?) -> NSRect { r }
 
     override func sendEvent(_ e: NSEvent) {
         if traceEvents, [.keyDown, .leftMouseDown].contains(e.type) {

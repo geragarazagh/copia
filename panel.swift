@@ -8,8 +8,11 @@
 // field row 58, rows 60.
 import AppKit
 
-/// The width, and the tallest the panel gets (the approved mockup's size).
-let panelSize = NSSize(width: 760, height: 720)
+/// The width and the tallest the panel gets: Spotlight's own, measured on this Mac (its clipboard list, 2026-11-14:
+/// 640 pt wide, 545 pt at most with nine rows, then the list scrolls). 0.4 was 760 × 720, the round-3 mockup's size;
+/// his review: too wide, «like Spotlight's width». COPIA_TALL=1 lets it grow to the screen's height instead (a variant
+/// for his look, «Copia 0.5 — варианты»).
+let panelSize = NSSize(width: 640, height: ProcessInfo.processInfo.environment["COPIA_TALL"] != nil ? 10_000 : 546)
 let panelCorner: CGFloat = 22
 /// Room around the panel inside its window: the glass's own shadow and the 3 % growth of the leaving animation must
 /// end inside the window. At 16 pt the window's edge cut the shadow where it was still 6 levels dark under the panel,
@@ -19,7 +22,10 @@ let panelMargin: CGFloat = 64
 /// Space kept between the panel and the edges of the screen's visible frame. Spotlight's top sits 6 pt under the menu
 /// bar (measured: y 38 on this Mac's 32 pt menu bar); the bottom keeps the same.
 let screenGap: CGFloat = 6
-let fieldH: CGFloat = 58, factsH: CGFloat = 40, rowH: CGFloat = 60, listInset: CGFloat = 8
+/// Spotlight's measures: the field row and the result rows 56 pt (0.4: 58 and 60 with two lines of text per row).
+let fieldH: CGFloat = 56, factsH: CGFloat = 36, rowH: CGFloat = 56, listInset: CGFloat = 8
+/// The picture of a row: Spotlight's icons are 36 pt in its 56 pt rows.
+let rowPicture: CGFloat = 36
 
 final class Flipped: NSView { override var isFlipped: Bool { true } }
 
@@ -178,19 +184,19 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         height = h; top = t
         view.setFrameSize(NSSize(width: panelSize.width, height: h))
         guard let w = window, let s = screen else { return }
-        let x = s.visibleFrame.midX - panelSize.width / 2 + dragX
+        let x = left
         w.setFrame(NSRect(x: x - panelMargin, y: t - h - panelMargin, width: panelSize.width + 2 * panelMargin,
                           height: h + 2 * panelMargin), display: true)
     }
 
-    /// A sideways pull while dragging (rubber band); 0 at rest: the panel is always centred across.
-    var dragX: CGFloat = 0
+    /// The panel's left edge (screen points): its place's column, or wherever a drag has it.
+    var left: CGFloat = 0
 
-    /// The place chosen for this screen (drag and snap, place.swift); the middle until the person moves it.
-    func placeFor(_ s: NSScreen) -> Place { store.setting("place." + screenKey(s)).flatMap(Place.init) ?? .middle }
+    /// The place chosen for this screen (drag and snap, place.swift); top centre until the person moves it.
+    func placeFor(_ s: NSScreen) -> Place { store.setting("place." + screenKey(s)).flatMap(Place.init) ?? .standard }
 
     // Drag state (place.swift).
-    var dragCaught: Int?
+    var dragPlace: Place?
     let settleTicker = Ticker()
     /// Counted for the tests (the trackpad's tap itself cannot be observed).
     var hapticTaps = 0
@@ -222,7 +228,9 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         if let m = monitor, m.denied {
             view.setFacts(nil, note: L("Reading the clipboard is off: Privacy & Security > Paste from Other Apps"))
         } else if !sel.isEmpty {
-            view.setFacts(Facts(sel.order.compactMap(entry)), note: nil)
+            let picks = sel.order.compactMap(entry)
+            view.setFacts(Facts(picks), note: nil,
+                          strip: OrderMark.current == .strip && picks.count > 1 ? picks.map { Thumbs.shared.thumb($0, store: store, side: rowPicture) } : [])
         } else {
             view.setFacts(nil, note: shown.isEmpty ? "" : counted(shown.count, "object|objects"))
         }
@@ -243,7 +251,9 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         updateFacts()
     }
 
-    var focused: Bool { forceFocus || window?.isKeyWindow == true }
+    /// The rows' selection is drawn in the accent colour only while the list has the keys; with the caret in the
+    /// search it turns grey, as any Mac list does when another control has the focus: one look tells where the keys go.
+    var focused: Bool { forceFocus || (window?.isKeyWindow == true && !searching) }
 
     // MARK: actions
 
@@ -330,6 +340,13 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
 
     /// ⌘ keys of the panel. The search field keeps the typing focus while the panel is open, so ⌫ alone edits the
     /// search and ⌘⌫ deletes the selection (Finder's Move to Trash); with nothing picked the keys act on the field.
+    /// ⌘ keys of the panel, by where the keys are (his second review of 0.4, 2026-11-14 17:59: in the search field
+    /// ⌘A did nothing; «separate the search field from the list properly»):
+    /// - the search field (a caret in it): every key of a macOS text field, ⌘A selects the query, ⌘X ⌘C ⌘V, ⌘Z, ⌥⌫ and
+    ///   ⌘⌫ edit it; the list is not touched;
+    /// - the list (no caret): ⌘A picks every row, ⌘C copies the picks, ⌘⌫ or ⌫ deletes them, ⌘Z brings them back,
+    ///   ⌘V starts a search with the pasted text.
+    /// ⌘F goes to the field from anywhere; ↓, ↑ or Tab from the field give the keys to the list.
     func keyEquivalent(_ e: NSEvent) -> Bool {
         let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.capsLock, .numericPad, .function])
         guard mods.contains(.command) else { return false }
@@ -338,37 +355,59 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         // in the preview copied the whole history and hid the panel).
         if let k = NSApp.keyWindow, k !== window { return false }
         let key = shortcutKey(e)
-        let editor = window?.fieldEditor(false, for: view.field) as? NSTextView
         switch (key, mods) {
-        case ("c", [.command]):
-            if !sel.isEmpty { copySelection() } else { editor?.copy(nil) }
-        case ("a", [.command]):
-            selectAll()
-        case ("z", [.command]):
-            if !undoDelete() { editor?.undoManager?.undo() }
-        case ("v", [.command]): editor?.paste(nil)
-        case (",", [.command]): openBrowser?(.settings)
-        case ("x", [.command]): editor?.cut(nil)
-        case (_, [.command]) where e.keyCode == 51:   // ⌘⌫
-            if !sel.isEmpty { deleteSelection() } else { editor?.deleteToBeginningOfLine(nil) }
-        default:
-            return false
+        case ("f", [.command]): focusSearch(); return true
+        case (",", [.command]): openBrowser?(.settings); return true
+        default: break
+        }
+        if searching, let ed = window?.fieldEditor(false, for: view.field) as? NSTextView {
+            // The panel has no Edit menu to carry these (a panel of an app with no menu bar), so they go to the field
+            // editor here, as the Edit menu would send them.
+            switch (key, mods) {
+            case ("a", [.command]): ed.selectAll(nil)
+            case ("c", [.command]): ed.copy(nil)
+            case ("x", [.command]): ed.cut(nil)
+            case ("v", [.command]): ed.paste(nil)
+            case ("z", [.command]): ed.undoManager?.undo()
+            case ("z", [.command, .shift]): ed.undoManager?.redo()
+            case (_, [.command]) where e.keyCode == 51: ed.deleteToBeginningOfLine(nil)   // ⌘⌫, as in every text field
+            default: return false
+            }
+            return true
+        }
+        switch (key, mods) {
+        case ("c", [.command]): copySelection()
+        case ("a", [.command]): selectAll()
+        case ("z", [.command]): _ = undoDelete()
+        case ("v", [.command]): focusSearch(); (window?.fieldEditor(false, for: view.field) as? NSTextView)?.paste(nil)
+        case (_, [.command]) where e.keyCode == 51: deleteSelection()   // ⌘⌫
+        default: return false
         }
         return true
     }
 
+    /// The search field's keys that are not text editing: ↓ ↑ and Tab hand the keys to the list (picking a row as
+    /// they go), Return copies, Esc steps back.
     func control(_ control: NSControl, textView: NSTextView, doCommandBy s: Selector) -> Bool {
         switch s {
-        case #selector(NSResponder.moveUp(_:)): move(-1, extending: false)
-        case #selector(NSResponder.moveDown(_:)): move(1, extending: false)
+        case #selector(NSResponder.moveUp(_:)): toList(); move(-1, extending: false)
+        case #selector(NSResponder.moveDown(_:)): toList(); move(1, extending: false)
         case #selector(NSResponder.moveUpAndModifySelection(_:)), #selector(NSResponder.moveParagraphBackwardAndModifySelection(_:)):
-            move(-1, extending: true)
+            toList(); move(-1, extending: true)
         case #selector(NSResponder.moveDownAndModifySelection(_:)), #selector(NSResponder.moveParagraphForwardAndModifySelection(_:)):
-            move(1, extending: true)
-        case #selector(NSResponder.cancelOperation(_:)): preview.isOpen ? closePreview() : hide()
+            toList(); move(1, extending: true)
+        case #selector(NSResponder.insertTab(_:)): toList(); if sel.isEmpty { move(1, extending: false) }
+        case #selector(NSResponder.cancelOperation(_:)): escape()
+        case #selector(NSResponder.insertNewline(_:)): copyOnReturn()
         default: return false
         }
         return true
+    }
+
+    /// The keys to the list: the caret leaves the field, the query stays.
+    func toList() {
+        window?.makeFirstResponder(view)
+        selectionChanged()
     }
 
     func controlTextDidChange(_ n: Notification) {
@@ -392,13 +431,15 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         let mouse = NSEvent.mouseLocation
         screen = trialScreen() ?? NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
         sizeTicker.stop(); settleTicker.stop()
-        dragX = 0
         let h = contentHeight()
+        if let s = screen { left = restingLeft(placeFor(s), on: s) }
         setBox(height: h, top: screen.map { restingTop(placeFor($0), height: h, on: $0) } ?? 0)
         view.resetMotion()
         w.alphaValue = 0
         w.makeKeyAndOrderFront(nil)
-        w.makeFirstResponder(view.field)
+        // Opening is for choosing (his review of 0.4): no caret and nothing typed into the search at once. The list has
+        // the keys (arrows, Return, Space, ⌘C, ⌘⌫); ⌘F, or a click into the field, starts a search, as in Finder.
+        w.makeFirstResponder(view)
         // Appears in about three frames (Spotlight: 0 → 40 % → 100 % at 60 fps).
         NSAnimationContext.runAnimationGroup { c in
             c.duration = 2.0 / 60 * slow
@@ -456,7 +497,8 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
 
     // MARK: preview
 
-    var spaceOpensPreview: Bool { preview.isOpen || (!sel.isEmpty && (query.isEmpty || !typedSinceSelection)) }
+    /// Space is the preview's while the list has the keys; in the search field it is a space.
+    var spaceOpensPreview: Bool { !searching && (preview.isOpen || !sel.isEmpty) }
 
     func togglePreview() {
         if preview.isOpen { closePreview(); return }
@@ -474,7 +516,57 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         guard let id = preview.entry?.id else { return }
         preview.close(to: rowPictureRect(id))
         window?.makeKey()
+        window?.makeFirstResponder(searching || !query.isEmpty ? view.field : view)
+    }
+
+    /// The search field has the keys (a caret in it).
+    var searching: Bool {
+        guard let w = window, let ed = w.fieldEditor(false, for: view.field) else { return false }
+        return w.firstResponder === ed && ed.delegate === view.field
+    }
+
+    /// ⌘F: into the search field, its text selected (Finder's ⌘F).
+    func focusSearch() {
         window?.makeFirstResponder(view.field)
+        (window?.fieldEditor(false, for: view.field) as? NSTextView)?.selectAll(nil)
+        selectionChanged()
+    }
+
+    /// Esc, step by step back: the preview closes; a search is cleared and the list takes the keys again; the panel goes.
+    func escape() {
+        if preview.isOpen { closePreview(); return }
+        if !query.isEmpty || searching {
+            let had = !query.isEmpty
+            view.field.stringValue = ""
+            window?.makeFirstResponder(view)
+            if had { filter() }
+            selectionChanged()
+            return
+        }
+        hide()
+    }
+
+    /// Return copies, as a double click: the picks, or with nothing picked the first row (Spotlight's Return opens its
+    /// top hit).
+    func copyOnReturn() {
+        if sel.isEmpty, let first = shown.first { sel.click(first.id); selectionChanged() }
+        copySelection()
+    }
+
+    /// Keys while the list has them (no caret): the arrows move, ⇧ stretches, Return copies, Esc steps back. Letters do
+    /// nothing until ⌘F: opening is for choosing.
+    func listKey(_ e: NSEvent) -> Bool {
+        let shift = e.modifierFlags.contains(.shift)
+        switch Int(e.keyCode) {
+        case 125: move(1, extending: shift)
+        case 126: move(-1, extending: shift)
+        case 36, 76: copyOnReturn()
+        case 53: escape()
+        case 51, 117: deleteSelection()   // ⌫ and ⌦ in the list delete the picks, as ⌘⌫ (the field has its own ⌫)
+        case 48: focusSearch()   // Tab: back to the search field
+        default: return false
+        }
+        return true
     }
 
     /// The panel's rectangle in screen points (or in its window, for the off-screen renders).
@@ -487,7 +579,7 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     func rowPictureRect(_ id: Int64) -> NSRect? {
         guard let r = rows.firstIndex(where: { if case .entry(let i) = $0 { return shown[i].id == id }; return false }) else { return nil }
         let row = view.table.rect(ofRow: r)   // from the table's geometry: the cell may not exist yet
-        let pic = NSRect(x: row.minX + listInset + 12, y: row.minY + (rowH - 40) / 2, width: 40, height: 40)
+        let pic = NSRect(x: row.minX + listInset + 10, y: row.minY + (rowH - rowPicture) / 2, width: rowPicture, height: rowPicture)
         let inList = view.table.convert(pic, to: view.scroll)
         guard view.scroll.bounds.contains(NSPoint(x: inList.midX, y: inList.midY)) else { return nil }
         let r2 = view.table.convert(pic, to: nil)
@@ -557,11 +649,15 @@ final class Panel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
+    /// The frame exactly as computed: AppKit otherwise pulls a window under the menu bar, and with the shadow's room
+    /// above it the panel's top place came out 56 pt lower than Spotlight's (measured in the agents' session, 0.5).
+    override func constrainFrameRect(_ r: NSRect, to s: NSScreen?) -> NSRect { r }
+
     override func performKeyEquivalent(with e: NSEvent) -> Bool {
         owner?.keyEquivalent(e) == true || super.performKeyEquivalent(with: e)
     }
 
-    override func cancelOperation(_ sender: Any?) { owner?.preview.isOpen == true ? owner?.closePreview() : owner?.hide() }
+    override func cancelOperation(_ sender: Any?) { owner?.escape() }
 
     /// Space: the preview, when something is picked and the person is not typing a search (then it is a space).
     override func sendEvent(_ e: NSEvent) {
@@ -730,10 +826,27 @@ final class PanelView: NSView {
     override func acceptsFirstMouse(for e: NSEvent?) -> Bool { true }
     override func mouseDown(with e: NSEvent) { owner?.drag(from: e) }
 
+    // The list's keys when the search field has none (no caret on opening).
+    override var acceptsFirstResponder: Bool { true }
+    override func keyDown(with e: NSEvent) {
+        if owner?.listKey(e) == true { return }
+        // Letters wait for ⌘F, silently (no beep for every key).
+        if e.modifierFlags.intersection([.command, .control]).isEmpty { return }
+        super.keyDown(with: e)
+    }
+
     /// «4 объекта · 3 381 символ · 519 слов · ≈ 2 737 токенов · 6,2 МБ»: the count bold, the rest secondary.
-    func setFacts(_ f: Facts?, note: String?) {
+    func setFacts(_ f: Facts?, note: String?, strip: [NSImage] = []) {
         let font = NSFont.monospacedDigitSystemFont(ofSize: 12.5, weight: .regular)
         let s = NSMutableAttributedString()
+        // The risky order mark: the picks themselves, small, in paste order, before the facts.
+        for (k, im) in strip.enumerated() {
+            let a = NSTextAttachment()
+            a.image = im
+            a.bounds = NSRect(x: 0, y: -5, width: 18, height: 18)
+            s.append(NSAttributedString(attachment: a))
+            s.append(NSAttributedString(string: k == strip.count - 1 ? "   " : " ", attributes: [.font: font]))
+        }
         defer {
             let p = NSMutableParagraphStyle(); p.alignment = .center; p.lineBreakMode = .byTruncatingTail
             s.addAttribute(.paragraphStyle, value: p, range: NSRange(location: 0, length: s.length))

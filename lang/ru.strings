@@ -90,3 +90,11 @@
 "Show All" = "Показать все";
 "Quit %@" = "Завершить %@";
 "Bring All to Front" = "Все окна — на передний план";
+"Position on Screen" = "Расположение на экране";
+"Top Left" = "Вверху слева";
+"Top Center" = "Вверху по центру";
+"Top Right" = "Вверху справа";
+"Center" = "По центру";
+"Bottom Left" = "Внизу слева";
+"Bottom Center" = "Внизу по центру";
+"Bottom Right" = "Внизу справа";

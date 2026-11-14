@@ -118,6 +118,8 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
     weak var monitor: Monitor?
     /// Re-registers the hot key after it is changed in Settings.
     var onHotKeyChange: (() -> Void)?
+    /// Settings' «Position on Screen» changed (the panel takes it).
+    var onPlaceChange: ((Place, NSScreen) -> Void)?
     private(set) var window: BrowserWindow?
     private let split = NSSplitViewController()
     let sidebar = SidebarController()
@@ -341,7 +343,8 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
         var o = order.filter { ids.contains($0) }
         let added = shown.map(\.id).filter { ids.contains($0) && !o.contains($0) }
         if ids.count == shown.count && shown.count > 1 && added.count > 1 && before.count < shown.count - 1 {
-            o = shown.sorted { $0.copied < $1.copied }.map(\.id)
+            // ⌘A: the picks keep their numbers, the rest follow in the order of copying (as Selection.all).
+            o += shown.sorted { $0.copied < $1.copied }.map(\.id).filter { !o.contains($0) }
         } else if let c = cursor, added.contains(c), added.count > 1, let ci = shown.firstIndex(where: { $0.id == c }),
                   let first = shown.firstIndex(where: { $0.id == added.first }), ci < first {
             o += added.reversed()   // a range stretched upwards: picked from the anchor up

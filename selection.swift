@@ -45,9 +45,13 @@ struct Selection: Equatable {
         cursor = id
     }
 
-    /// ⌘A: everything shown, in the order it was copied (`list` is newest first, as the panel shows it).
+    /// ⌘A: everything shown. What was already picked keeps its numbers; the rest follows in the order it was copied
+    /// (`list` is newest first, as the panel shows it). 0.4 renumbered everything in copy order, so three rows picked
+    /// 1, 2, 3 from the top read 3, 2, 1 after ⌘A (his recording of the big window).
     mutating func all(_ list: [Int64]) {
-        order = list.reversed(); anchor = list.first; base = []; cursor = list.first
+        let kept = order.filter { list.contains($0) }
+        order = kept + list.reversed().filter { !kept.contains($0) }
+        anchor = list.first; base = []; cursor = list.first
     }
 
     /// ↑ ↓ (and ⇧): one step from the cursor in the shown list; with nothing picked, the first row.

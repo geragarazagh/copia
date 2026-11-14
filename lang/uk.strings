@@ -90,3 +90,11 @@
 "Show All" = "Показати всі";
 "Quit %@" = "Завершити %@";
 "Bring All to Front" = "Усі наперед";
+"Position on Screen" = "Розташування на екрані";
+"Top Left" = "Вгорі зліва";
+"Top Center" = "Вгорі по центру";
+"Top Right" = "Вгорі справа";
+"Center" = "По центру";
+"Bottom Left" = "Внизу зліва";
+"Bottom Center" = "Внизу по центру";
+"Bottom Right" = "Внизу справа";

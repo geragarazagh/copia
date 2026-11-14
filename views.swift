@@ -191,8 +191,11 @@ final class Items {
     }
 }
 
-/// The order badge of a picked item, as in the panel.
+/// The order badge of a picked item in the big window's grids: Apple's own ordered selection in a grid of pictures,
+/// the Photos picker's numbered accent circle at the picture's bottom-right corner (PHPicker, selection .ordered).
+/// The panel's rows show the order as a plain trailing number instead (OrderMark); with the marks off, none here.
 func badgeView() -> Badge { let b = Badge(); b.isHidden = true; return b }
+func gridBadge(_ n: Int?) -> Int? { [.none, .strip].contains(OrderMark.current) ? nil : n }
 
 // MARK: icons
 
@@ -263,7 +266,7 @@ final class IconsView: NSObject, ItemsView, NSCollectionViewDataSource, NSCollec
     func updateBadges() {
         guard let o = owner else { return }
         for case let it as IconItem in grid.visibleItems() {
-            if let p = grid.indexPath(for: it) { it.badge(o.order.count > 1 ? o.order.firstIndex(of: id(p)).map { $0 + 1 } : nil) }
+            if let p = grid.indexPath(for: it) { it.badge(gridBadge(o.order.count > 1 ? o.order.firstIndex(of: id(p)).map { $0 + 1 } : nil)) }
         }
     }
 
@@ -287,7 +290,7 @@ final class IconsView: NSObject, ItemsView, NSCollectionViewDataSource, NSCollec
         if let o = owner {
             let e = sections[p.section].1[p.item]
             it.show(e, store: o.store, side: o.iconSize, deleted: o.pane == .deleted)
-            it.badge(o.order.count > 1 ? o.order.firstIndex(of: e.id).map { $0 + 1 } : nil)
+            it.badge(gridBadge(o.order.count > 1 ? o.order.firstIndex(of: e.id).map { $0 + 1 } : nil))
         }
         return it
     }
@@ -414,7 +417,7 @@ final class IconItem: NSCollectionViewItem {
         name.frame = NSRect(x: (w - lw) / 2, y: side + 16 + 6, width: lw, height: th)
         titleBack.frame = name.frame.insetBy(dx: -4, dy: -1)
         meta.frame = NSRect(x: 2, y: name.frame.maxY + 2, width: w - 4, height: 14)
-        badgeV.frame = NSRect(x: plate.frame.minX - 4, y: plate.frame.minY - 4, width: 20, height: 20)
+        badgeV.frame = NSRect(x: plate.frame.maxX - 22, y: plate.frame.maxY - 22, width: 20, height: 20)
     }
 
     override var isSelected: Bool { didSet { update() } }
@@ -539,8 +542,9 @@ final class ListView: NSObject, ItemsView, NSTableViewDataSource, NSTableViewDel
     func updateBadges() {
         guard let o = owner else { return }
         table.enumerateAvailableRowViews { rv, row in
-            (rv.view(atColumn: 0) as? NameCell)?.badge.number = o.order.count > 1 ? o.order.firstIndex(of: o.shown[row].id).map { $0 + 1 } : nil
-            (rv.view(atColumn: 0) as? NameCell)?.badge.isHidden = !(o.order.count > 1 && o.order.contains(o.shown[row].id))
+            let n = gridBadge(o.order.count > 1 ? o.order.firstIndex(of: o.shown[row].id).map { $0 + 1 } : nil)
+            (rv.view(atColumn: 0) as? NameCell)?.badge.number = n
+            (rv.view(atColumn: 0) as? NameCell)?.badge.isHidden = n == nil
         }
     }
 
@@ -570,7 +574,7 @@ final class ListView: NSObject, ItemsView, NSTableViewDataSource, NSTableViewDel
             let cell = t.makeView(withIdentifier: NameCell.id, owner: nil) as? NameCell ?? NameCell()
             cell.icon.image = Thumbs.shared.thumb(e, store: o.store, side: 16)
             cell.textField?.stringValue = shownTitle(e).replacingOccurrences(of: "\n", with: " ")
-            cell.badge.number = o.order.count > 1 ? o.order.firstIndex(of: e.id).map { $0 + 1 } : nil
+            cell.badge.number = gridBadge(o.order.count > 1 ? o.order.firstIndex(of: e.id).map { $0 + 1 } : nil)
             cell.badge.isHidden = cell.badge.number == nil
             return cell
         }
@@ -637,7 +641,7 @@ final class NameCell: NSTableCellView {
             icon.widthAnchor.constraint(equalToConstant: 16), icon.heightAnchor.constraint(equalToConstant: 16),
             l.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 6), l.centerYAnchor.constraint(equalTo: centerYAnchor),
             l.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -2),
-            badge.centerXAnchor.constraint(equalTo: icon.leadingAnchor, constant: 1), badge.centerYAnchor.constraint(equalTo: icon.topAnchor, constant: 1),
+            badge.centerXAnchor.constraint(equalTo: icon.trailingAnchor, constant: -1), badge.centerYAnchor.constraint(equalTo: icon.bottomAnchor, constant: -1),
             badge.widthAnchor.constraint(equalToConstant: 14), badge.heightAnchor.constraint(equalToConstant: 14)])
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -767,7 +771,7 @@ final class GalleryView: NSObject, ItemsView, NSCollectionViewDataSource, NSColl
         guard let o = owner else { return }
         for case let it as StripItem in strip.visibleItems() {
             if let p = strip.indexPath(for: it) {
-                let n = o.order.count > 1 ? o.order.firstIndex(of: o.shown[p.item].id).map { $0 + 1 } : nil
+                let n = gridBadge(o.order.count > 1 ? o.order.firstIndex(of: o.shown[p.item].id).map { $0 + 1 } : nil)
                 it.badgeV.number = n; it.badgeV.isHidden = n == nil
             }
         }
@@ -793,7 +797,7 @@ final class GalleryView: NSObject, ItemsView, NSCollectionViewDataSource, NSColl
         if let o = owner {
             let e = o.shown[p.item]
             it.picture.image = Thumbs.shared.thumb(e, store: o.store, side: 56)
-            let n = o.order.count > 1 ? o.order.firstIndex(of: e.id).map { $0 + 1 } : nil
+            let n = gridBadge(o.order.count > 1 ? o.order.firstIndex(of: e.id).map { $0 + 1 } : nil)
             it.badgeV.number = n; it.badgeV.isHidden = n == nil
         }
         return it
@@ -821,7 +825,7 @@ final class StripItem: NSCollectionViewItem {
         plate.frame = v.bounds
         picture.frame = v.bounds.insetBy(dx: 8, dy: 8)
         picture.imageScaling = .scaleProportionallyUpOrDown
-        badgeV.frame = NSRect(x: 0, y: 0, width: 18, height: 18)
+        badgeV.frame = NSRect(x: 54, y: 54, width: 16, height: 16)
         for s in [plate, picture, badgeV] as [NSView] { v.addSubview(s) }
         view = v
     }
