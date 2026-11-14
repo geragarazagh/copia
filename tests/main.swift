@@ -1183,6 +1183,11 @@ case "copy":
 case "general": general(); finish("general")
 case "links": linkTests(); finish("links")
 case "qlcrash": qlCrash(); finish("qlcrash")
+case "migrate" where argv.count == 3:   // opens a copy of a real history with this version's store: counts after migrating
+    let st = try! Store(dir: URL(fileURLWithPath: argv[2]))
+    let live = st.entries(), gone = st.entries(deleted: true)
+    print("live \(live.count), recently deleted \(gone.count), keys \(live.filter { $0.key != nil }.count + gone.filter { $0.key != nil }.count)")
+    exit(0)
 case "write" where argv.count >= 3:   // another app copying: TEXT on the general pasteboard, with HTML too when asked
     let pb = NSPasteboard.general
     pb.clearContents()
