@@ -1,0 +1,23 @@
+#!/bin/zsh
+# Off-screen tests (tests/main.swift says what each does). ./test runs unit, capture (a private pasteboard), copy
+# (a private pasteboard) and the renders (light, dark, purple accent, the leaving motion) into $TMPDIR/clip-render.
+# ./test general writes to the general pasteboard, his content saved before and put back after: run it outside
+# Claude's command sandbox. The binary stays at $TMPDIR/clip-tests.
+set -e
+cd "${0:A:h}"
+t=$TMPDIR/clip-tests
+swiftc -O -target arm64-apple-macos13.0 -o $t tests/main.swift app.swift capture.swift model.swift store.swift copy.swift \
+  selection.swift panel.swift rows.swift text.swift
+if [ "$1" = general ]; then $t general; exit; fi
+$t unit
+$t capture
+$t copy
+[ -d Clip.app ] || ./build >/dev/null
+out=$TMPDIR/clip-render; rm -rf "$out"; mkdir -p "$out"
+$t render $PWD/Clip.app light $out/light.png -AppleLanguages '(ru)'
+$t render $PWD/Clip.app dark $out/dark.png motion -AppleLanguages '(ru)'
+$t render $PWD/Clip.app dark $out/purple.png -AppleLanguages '(ru)' -AppleAccentColor 5
+$t render $PWD/Clip.app light $out/en.png -AppleLanguages '(en)'
+$t render $PWD/Clip.app light $out/uk.png -AppleLanguages '(uk)'
+echo "renders: $out"
+echo Done

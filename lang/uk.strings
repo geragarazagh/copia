@@ -1,0 +1,17 @@
+"Search" = "Пошук";
+"Image" = "Зображення";
+"Text" = "Текст";
+"Link" = "Посилання";
+"Color" = "Колір";
+"File" = "Файл";
+"Data" = "Дані";
+"object|objects" = "об’єкт|об’єкти|об’єктів";
+"character|characters" = "символ|символи|символів";
+"word|words" = "слово|слова|слів";
+"token|tokens" = "токен|токени|токенів";
+"byte|bytes" = "байт|байти|байтів";
+"KB" = "КБ";
+"MB" = "МБ";
+"GB" = "ГБ";
+"TB" = "ТБ";
+"Reading the clipboard is off: Privacy & Security > Paste from Other Apps" = "Читання буфера обміну вимкнено: Приватність і безпека > Вставлення з інших програм";

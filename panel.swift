@@ -1,0 +1,589 @@
+// The panel (variant А, his pick 2026-11-14 10:13): a search field over the history, centred on the screen with the
+// pointer, on real Liquid Glass (macOS 26+, following the person's Liquid Glass setting) or the system's popover
+// material before 26. Motion as Apple's, read frame by frame from Spotlight: it appears in about three frames, leaves
+// with blur and fade in about 85 ms, and every state change (search results, selection, deletion) lands in one frame;
+// nothing else moves. Measurements of the approved mockup (round 3): 760 × 720 pt, corner 22, field row 58, rows 60.
+import AppKit
+
+let panelSize = NSSize(width: 760, height: 720)
+let panelCorner: CGFloat = 22
+/// Room around the panel inside its window, so the 3 % growth of the leaving animation is not cut by the window edge.
+let panelMargin: CGFloat = 16
+let fieldH: CGFloat = 58, factsH: CGFloat = 40, rowH: CGFloat = 60, listInset: CGFloat = 8
+
+final class Flipped: NSView { override var isFlipped: Bool { true } }
+
+func fold(_ s: String) -> ContiguousArray<UInt8> {
+    ContiguousArray(s.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil).utf8)
+}
+
+enum Row {
+    case head(String)
+    case entry(Int)   // index into the shown entries
+}
+
+// MARK: the controller: data, selection, keys and the window
+
+final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate, NSWindowDelegate {
+    let store: Store
+    let monitor: Monitor?
+    let view: PanelView
+    private(set) var window: Panel?
+    private(set) var all: [Entry] = []
+    private(set) var shown: [Entry] = []
+    private(set) var rows: [Row] = []
+    var sel = Selection()
+    private var undo: [([Int64], Selection)] = []
+    private var pending: Int64?   // a plain click on a picked row among several: decided on mouse up (Finder)
+    private var hiding = false
+    /// Where ⌘C writes: the general pasteboard; a private one in tests.
+    var pasteboard = NSPasteboard.general
+    /// Off-screen renders draw the selection as in a focused window.
+    var forceFocus = false
+    /// Slows every animation by this factor, to step its frames in a test (CLIP_SLOW).
+    var slow = Double(ProcessInfo.processInfo.environment["CLIP_SLOW"] ?? "") ?? 1
+
+    init(store: Store, monitor: Monitor?, onScreen: Bool = true) {
+        self.store = store
+        self.monitor = monitor
+        view = PanelView(frame: NSRect(origin: .zero, size: panelSize), behindWindow: onScreen)
+        super.init()
+        view.table.dataSource = self
+        view.table.delegate = self
+        view.table.owner = self
+        view.field.delegate = self
+        if onScreen {
+            let w = Panel(view: view)
+            w.delegate = self
+            w.owner = self
+            window = w
+        }
+        reload()
+    }
+
+    var query: String { view.field.stringValue }
+    var isVisible: Bool { window?.isVisible == true && !hiding }
+
+    // MARK: data
+
+    /// Reads the history again (after a capture, a delete, an undo) and redraws in one frame.
+    func reload() {
+        all = store.entries()
+        warmSearch()
+        let gone = Set(sel.order).subtracting(all.map(\.id))
+        if !gone.isEmpty { sel.remove(gone) }
+        filter()
+    }
+
+    /// Search: case- and diacritic-insensitive («ё» finds «е»), over what the row shows and the whole text, applied
+    /// in the same frame. Foundation's insensitive search compares Unicode at every position: 2 s per key on 5 000
+    /// entries of 1.8 KB, and still 55 ms as a literal NSString search on folded text (./test unit). So each entry is
+    /// folded once into UTF-8 bytes and searched with memmem (UTF-8 never matches in the middle of a character).
+    func filter() {
+        let q = Array(fold(query.trimmingCharacters(in: .whitespacesAndNewlines)))
+        if q.isEmpty { shown = all } else {
+            // Split over the cores: one thread scans 9 MB in about 12 ms, twelve do it in one or two.
+            let hay = all.map(folded)
+            let n = hay.count, chunks = max(1, min(n, ProcessInfo.processInfo.activeProcessorCount * 2))
+            var hit = [Bool](repeating: false, count: n)
+            hit.withUnsafeMutableBufferPointer { out in
+                let o = out
+                DispatchQueue.concurrentPerform(iterations: chunks) { c in
+                    for i in stride(from: c * n / chunks, to: (c + 1) * n / chunks, by: 1) {
+                        o[i] = hay[i].withUnsafeBytes { h in q.withUnsafeBytes { nd in memmem(h.baseAddress, h.count, nd.baseAddress, nd.count) != nil } }
+                    }
+                }
+            }
+            shown = all.indices.filter { hit[$0] }.map { all[$0] }
+        }
+        var r: [Row] = []
+        var day: Date?
+        for (i, e) in shown.enumerated() {
+            // Copies are newest first, so a new day starts only where the date falls below the current day's start.
+            if let day, e.copied >= day { r.append(.entry(i)); continue }
+            let d = Calendar.current.startOfDay(for: e.copied)
+            if d != day { r.append(.head(dayText(d))); day = d }
+            r.append(.entry(i))
+        }
+        rows = r
+        view.table.reloadData()
+        updateFacts()
+    }
+
+    func entry(_ id: Int64) -> Entry? { all.first { $0.id == id } }
+
+    private var foldCache: [Int64: ContiguousArray<UInt8>] = [:]
+    private func folded(_ e: Entry) -> ContiguousArray<UInt8> {
+        if let f = foldCache[e.id] { return f }
+        let f = fold(e.title + "\n" + e.text)
+        foldCache[e.id] = f
+        return f
+    }
+
+    /// Folds every entry not folded yet, off the main thread, so the first key typed after launch is as fast as the rest.
+    func warmSearch(wait: Bool = false) {
+        let todo = all.filter { foldCache[$0.id] == nil }.map { ($0.id, $0.title + "\n" + $0.text) }
+        guard !todo.isEmpty else { return }
+        let g = DispatchGroup()
+        g.enter()
+        DispatchQueue.global(qos: .utility).async {
+            let done = todo.map { ($0.0, fold($0.1)) }
+            DispatchQueue.main.async { for (id, f) in done where self.foldCache[id] == nil { self.foldCache[id] = f }; g.leave() }
+        }
+        if wait { while g.wait(timeout: .now()) == .timedOut { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) } }
+    }
+
+    func updateFacts() {
+        if let m = monitor, m.denied {
+            view.setFacts(nil, note: L("Reading the clipboard is off: Privacy & Security > Paste from Other Apps"))
+        } else if !sel.isEmpty {
+            view.setFacts(Facts(sel.order.compactMap(entry)), note: nil)
+        } else {
+            view.setFacts(nil, note: shown.isEmpty ? "" : counted(shown.count, "object|objects"))
+        }
+    }
+
+    /// The selection changed: only the rows' colours, badges and the facts line change, in the same frame.
+    func selectionChanged(scrollTo id: Int64? = nil) {
+        for r in 0..<rows.count {
+            if let c = view.table.view(atColumn: 0, row: r, makeIfNecessary: false) as? EntryCell, case .entry(let i) = rows[r] {
+                c.update(selected: sel.contains(shown[i].id), badge: sel.badge(shown[i].id), focused: focused)
+            }
+        }
+        if let id, let r = rows.firstIndex(where: { if case .entry(let i) = $0 { return shown[i].id == id }; return false }) {
+            view.table.scrollRowToVisible(r)
+        }
+        updateFacts()
+    }
+
+    var focused: Bool { forceFocus || window?.isKeyWindow == true }
+
+    // MARK: actions
+
+    /// ⌘C or a double click: the whole selection in one write, then the panel goes; the person pastes.
+    func copySelection() {
+        let picked = sel.order.compactMap(entry)
+        guard !picked.isEmpty else { return }
+        let r = Clip.write(picked.map { ($0, store.reps($0.id)) }, store: store, to: pasteboard)
+        monitor?.ownCount = r.count
+        hide()
+    }
+
+    /// ⌘⌫: no question; into Recently Deleted; the row that takes the first deleted row's place becomes the selection.
+    func deleteSelection() {
+        let ids = sel.order
+        guard !ids.isEmpty else { return }
+        let list = shown.map(\.id)
+        let first = list.firstIndex { ids.contains($0) } ?? 0
+        undo.append((ids, sel))
+        store.delete(ids)
+        reload()
+        let left = shown.map(\.id)
+        sel.clear()
+        if !left.isEmpty { sel.click(left[min(first, left.count - 1)]) }
+        selectionChanged(scrollTo: sel.order.first)
+    }
+
+    /// ⌘Z: the last deletion comes back in place, picked as it was.
+    func undoDelete() -> Bool {
+        guard let (ids, before) = undo.popLast() else { return false }
+        store.undelete(ids)
+        sel = before
+        reload()
+        selectionChanged(scrollTo: before.order.first)
+        return true
+    }
+
+    func selectAll() {
+        sel.all(shown.map(\.id))
+        selectionChanged()
+    }
+
+    func move(_ step: Int, extending: Bool) {
+        sel.move(step, in: shown.map(\.id), extending: extending)
+        selectionChanged(scrollTo: sel.cursor)
+    }
+
+    // MARK: mouse (from ListTable)
+
+    func mouseDown(row: Int, flags: NSEvent.ModifierFlags, clicks: Int) {
+        guard row >= 0, row < rows.count, case .entry(let i) = rows[row] else { return }
+        let id = shown[i].id
+        if clicks >= 2 {
+            pending = nil
+            if !sel.contains(id) { sel.click(id) }
+            selectionChanged()
+            copySelection()
+            return
+        }
+        if flags.contains(.command) { sel.toggle(id) }
+        else if flags.contains(.shift) { sel.extend(to: id, in: shown.map(\.id)) }
+        else if sel.contains(id) && sel.count > 1 { pending = id; return }   // may be the first click of a double click
+        else { sel.click(id) }
+        selectionChanged()
+    }
+
+    func mouseUp() {
+        if let id = pending { pending = nil; sel.click(id); selectionChanged() }
+    }
+
+    // MARK: keys
+
+    /// ⌘ keys of the panel. The search field keeps the typing focus while the panel is open, so ⌫ alone edits the
+    /// search and ⌘⌫ deletes the selection (Finder's Move to Trash); with nothing picked the keys act on the field.
+    func keyEquivalent(_ e: NSEvent) -> Bool {
+        let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.capsLock, .numericPad, .function])
+        guard mods.contains(.command) else { return false }
+        let key = e.charactersIgnoringModifiers?.lowercased() ?? ""
+        let editor = window?.fieldEditor(false, for: view.field) as? NSTextView
+        switch (key, mods) {
+        case ("c", [.command]):
+            if !sel.isEmpty { copySelection() } else { editor?.copy(nil) }
+        case ("a", [.command]):
+            selectAll()
+        case ("z", [.command]):
+            if !undoDelete() { editor?.undoManager?.undo() }
+        case ("v", [.command]): editor?.paste(nil)
+        case ("x", [.command]): editor?.cut(nil)
+        case (_, [.command]) where e.keyCode == 51:   // ⌘⌫
+            if !sel.isEmpty { deleteSelection() } else { editor?.deleteToBeginningOfLine(nil) }
+        default:
+            return false
+        }
+        return true
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy s: Selector) -> Bool {
+        switch s {
+        case #selector(NSResponder.moveUp(_:)): move(-1, extending: false)
+        case #selector(NSResponder.moveDown(_:)): move(1, extending: false)
+        case #selector(NSResponder.moveUpAndModifySelection(_:)), #selector(NSResponder.moveParagraphBackwardAndModifySelection(_:)):
+            move(-1, extending: true)
+        case #selector(NSResponder.moveDownAndModifySelection(_:)), #selector(NSResponder.moveParagraphForwardAndModifySelection(_:)):
+            move(1, extending: true)
+        case #selector(NSResponder.cancelOperation(_:)): hide()
+        default: return false
+        }
+        return true
+    }
+
+    func controlTextDidChange(_ n: Notification) { filter() }
+
+    // MARK: showing and hiding
+
+    func toggle() { isVisible ? hide() : show() }
+
+    func show() {
+        guard let w = window else { return }
+        hiding = false
+        view.field.stringValue = ""
+        sel.clear(); pending = nil
+        reload()
+        view.table.scrollRowToVisible(0)
+        // Centred on the screen with the pointer, as the system centres a window (NSWindow.center: horizontally in the
+        // middle, a little above the vertical middle), per screen: no positioning of our own.
+        let mouse = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
+        if let s = screen { w.setFrameOrigin(NSPoint(x: s.visibleFrame.midX - w.frame.width / 2, y: s.visibleFrame.midY - w.frame.height / 2)) }
+        w.center()
+        view.resetMotion()
+        w.alphaValue = 0
+        w.makeKeyAndOrderFront(nil)
+        w.makeFirstResponder(view.field)
+        // Appears in about three frames (Spotlight: 0 → 40 % → 100 % at 60 fps).
+        NSAnimationContext.runAnimationGroup { c in
+            c.duration = 2.0 / 60 * slow
+            c.timingFunction = CAMediaTimingFunction(name: .linear)
+            w.animator().alphaValue = 1
+        }
+        selectionChanged()
+    }
+
+    func hide() {
+        guard let w = window, w.isVisible, !hiding else { return }
+        hiding = true
+        let d = 0.085 * slow
+        // Leaves with blur and fade and a slight growth, about 85 ms, as Spotlight does.
+        view.animateOut(duration: d)
+        NSAnimationContext.runAnimationGroup({ c in
+            c.duration = d
+            c.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            w.animator().alphaValue = 0
+        }, completionHandler: {
+            guard self.hiding else { return }   // ⌥⌘C again while it was leaving: it stays
+            w.orderOut(nil)
+            w.alphaValue = 1
+            self.view.resetMotion()
+            self.hiding = false
+        })
+    }
+
+    // A click outside: another window took the keyboard.
+    func windowDidResignKey(_ n: Notification) {
+        selectionChanged()
+        hide()
+    }
+
+    // MARK: table
+
+    func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
+
+    func tableView(_ t: NSTableView, heightOfRow row: Int) -> CGFloat {
+        if case .head = rows[row] { return 29 }
+        return rowH
+    }
+
+    func tableView(_ t: NSTableView, isGroupRow row: Int) -> Bool { false }
+    func tableView(_ t: NSTableView, shouldSelectRow row: Int) -> Bool { false }
+
+    func tableView(_ t: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { PlainRow() }
+
+    func tableView(_ t: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        switch rows[row] {
+        case .head(let s):
+            let c = t.makeView(withIdentifier: HeadCell.id, owner: nil) as? HeadCell ?? HeadCell()
+            c.label.stringValue = s
+            return c
+        case .entry(let i):
+            let c = t.makeView(withIdentifier: EntryCell.id, owner: nil) as? EntryCell ?? EntryCell()
+            let e = shown[i]
+            c.show(e, store: store)
+            c.update(selected: sel.contains(e.id), badge: sel.badge(e.id), focused: focused)
+            return c
+        }
+    }
+}
+
+// MARK: the window
+
+final class Panel: NSPanel {
+    weak var owner: PanelController?
+
+    init(view: PanelView) {
+        let size = NSSize(width: panelSize.width + 2 * panelMargin, height: panelSize.height + 2 * panelMargin)
+        // A non-activating panel takes the keyboard without making the app active, so the app in front stays in front
+        // and ⌘V after the copy goes where the person was (Spotlight's and Alfred's way).
+        super.init(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel],
+                   backing: .buffered, defer: false)
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = true
+        level = .floating
+        isFloatingPanel = true
+        hidesOnDeactivate = false
+        becomesKeyOnlyIfNeeded = false
+        isReleasedWhenClosed = false
+        animationBehavior = .none   // the motion is our own, timed as Apple's
+        collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary, .transient, .ignoresCycle]
+        let root = Flipped(frame: NSRect(origin: .zero, size: size))
+        view.frame.origin = NSPoint(x: panelMargin, y: panelMargin)
+        root.addSubview(view)
+        contentView = root
+    }
+
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+
+    override func performKeyEquivalent(with e: NSEvent) -> Bool {
+        owner?.keyEquivalent(e) == true || super.performKeyEquivalent(with: e)
+    }
+
+    override func cancelOperation(_ sender: Any?) { owner?.hide() }
+}
+
+// MARK: the view
+
+final class PanelView: NSView {
+    let field = NSTextField()
+    let table = ListTable()
+    let scroll = NSScrollView()
+    private let facts = NSTextField(labelWithString: "")
+    private let icon = NSImageView()
+    private let content = Flipped()
+    private var background: NSView!
+
+    override var isFlipped: Bool { true }
+
+    /// `behindWindow`: the glass or material shows what is behind the window (the real panel); false for renders,
+    /// where a picture of a desktop sits in the same window.
+    init(frame: NSRect, behindWindow: Bool) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layerUsesCoreImageFilters = true
+        content.frame = bounds
+        if #available(macOS 26.0, *) {
+            // Real Liquid Glass, as Apple's own apps draw it; the system applies the person's Liquid Glass choice
+            // (Clear or Tinted, Reduce Transparency) by itself.
+            let g = NSGlassEffectView(frame: bounds)
+            g.cornerRadius = panelCorner
+            g.style = .regular
+            g.contentView = content
+            background = g
+        } else {
+            // Before macOS 26 the closest system material: the popover's, which follows light and dark.
+            let v = NSVisualEffectView(frame: bounds)
+            v.material = .popover
+            v.blendingMode = behindWindow ? .behindWindow : .withinWindow
+            v.state = .active
+            v.maskImage = NSImage(size: bounds.size, flipped: false) { r in
+                NSBezierPath(roundedRect: r, xRadius: panelCorner, yRadius: panelCorner).fill(); return true
+            }
+            v.maskImage?.capInsets = NSEdgeInsets(top: panelCorner, left: panelCorner, bottom: panelCorner, right: panelCorner)
+            v.wantsLayer = true
+            v.layer?.cornerRadius = panelCorner
+            v.layer?.cornerCurve = .continuous
+            v.layer?.borderWidth = 0.5
+            v.layer?.borderColor = NSColor.labelColor.withAlphaComponent(0.14).cgColor
+            v.addSubview(content)
+            background = v
+        }
+        background.autoresizingMask = [.width, .height]
+        addSubview(background)
+
+        icon.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 19, weight: .medium))
+        icon.contentTintColor = .secondaryLabelColor
+        icon.frame = NSRect(x: 18, y: (fieldH - 24) / 2, width: 24, height: 24)
+        content.addSubview(icon)
+
+        field.isBordered = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        field.font = .systemFont(ofSize: 20)
+        field.cell?.isScrollable = true
+        field.cell?.wraps = false
+        field.placeholderAttributedString = NSAttributedString(string: L("Search"), attributes: [
+            .font: NSFont.systemFont(ofSize: 20), .foregroundColor: NSColor.tertiaryLabelColor])
+        let fh = field.intrinsicContentSize.height
+        field.frame = NSRect(x: 50, y: (fieldH - fh) / 2, width: panelSize.width - 50 - 20, height: fh)
+        content.addSubview(field)
+
+        content.addSubview(Separator(frame: NSRect(x: 0, y: fieldH, width: panelSize.width, height: 1)))
+
+        let listH = panelSize.height - fieldH - 1 - 1 - factsH
+        scroll.frame = NSRect(x: 0, y: fieldH + 1, width: panelSize.width, height: listH)
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.scrollerStyle = .overlay
+        scroll.automaticallyAdjustsContentInsets = false
+        scroll.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: 8, right: 0)
+        let col = NSTableColumn(identifier: .init("c"))
+        col.width = panelSize.width
+        table.addTableColumn(col)
+        table.headerView = nil
+        table.style = .plain
+        table.backgroundColor = .clear
+        table.intercellSpacing = NSSize(width: 0, height: 2)
+        table.selectionHighlightStyle = .none
+        table.focusRingType = .none
+        table.refusesFirstResponder = true   // the search field keeps the keyboard, as in Spotlight
+        table.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
+        table.gridStyleMask = []
+        scroll.documentView = table
+        content.addSubview(scroll)
+
+        content.addSubview(Separator(frame: NSRect(x: 0, y: panelSize.height - factsH - 1, width: panelSize.width, height: 1)))
+        facts.frame = NSRect(x: 20, y: panelSize.height - factsH + (factsH - 17) / 2, width: panelSize.width - 40, height: 17)
+        facts.alignment = .center
+        facts.lineBreakMode = .byTruncatingTail
+        content.addSubview(facts)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    /// «4 объекта · 3 381 символ · 519 слов · ≈ 2 737 токенов · 6,2 МБ»: the count bold, the rest secondary.
+    func setFacts(_ f: Facts?, note: String?) {
+        let font = NSFont.monospacedDigitSystemFont(ofSize: 12.5, weight: .regular)
+        let s = NSMutableAttributedString()
+        defer {
+            let p = NSMutableParagraphStyle(); p.alignment = .center; p.lineBreakMode = .byTruncatingTail
+            s.addAttribute(.paragraphStyle, value: p, range: NSRange(location: 0, length: s.length))
+            facts.attributedStringValue = s
+        }
+        if let f {
+            s.append(NSAttributedString(string: f.head, attributes: [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 12.5, weight: .semibold), .foregroundColor: NSColor.labelColor]))
+            if !f.parts.isEmpty {
+                s.append(NSAttributedString(string: "  ·  " + f.parts.joined(separator: "  ·  "), attributes: [
+                    .font: font, .foregroundColor: NSColor.secondaryLabelColor]))
+            }
+        } else if let note {
+            s.append(NSAttributedString(string: note, attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
+        }
+    }
+
+    // MARK: motion
+
+    /// Blur, fade (the window's) and 3 % growth from the centre, together, with the system's ease-in.
+    func animateOut(duration d: Double) {
+        guard let l = layer else { return }
+        let blur = CIFilter(name: "CIGaussianBlur")!
+        blur.setValue(0, forKey: kCIInputRadiusKey)
+        blur.name = "blur"
+        l.filters = [blur]
+        let b = CABasicAnimation(keyPath: "filters.blur.inputRadius")
+        b.fromValue = 0; b.toValue = 10
+        let c = NSPoint(x: bounds.midX, y: bounds.midY)
+        var t = CATransform3DMakeTranslation(c.x, c.y, 0)
+        t = CATransform3DScale(t, 1.03, 1.03, 1)
+        t = CATransform3DTranslate(t, -c.x, -c.y, 0)
+        let s = CABasicAnimation(keyPath: "sublayerTransform")
+        s.fromValue = CATransform3DIdentity; s.toValue = t
+        for a in [b, s] {
+            a.duration = d
+            a.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            a.fillMode = .forwards
+            a.isRemovedOnCompletion = false
+        }
+        l.add(b, forKey: "blur")
+        l.add(s, forKey: "grow")
+    }
+
+    func resetMotion() {
+        layer?.removeAllAnimations()
+        layer?.filters = nil
+        layer?.sublayerTransform = CATransform3DIdentity
+    }
+}
+
+/// A hairline between the field, the list and the facts line.
+final class Separator: NSView {
+    override func draw(_ r: NSRect) {
+        NSColor.labelColor.withAlphaComponent(0.1).setFill()
+        bounds.fill()
+    }
+}
+
+/// The list: rows are picked by our own Selection (ordered, like Finder's but remembering the order), so the table's
+/// own selection is off and clicks come here.
+final class ListTable: NSTableView {
+    weak var owner: PanelController?
+    override func acceptsFirstMouse(for e: NSEvent?) -> Bool { true }
+    override func mouseDown(with e: NSEvent) {
+        let r = row(at: convert(e.locationInWindow, from: nil))
+        owner?.mouseDown(row: r, flags: e.modifierFlags, clicks: e.clickCount)
+    }
+    override func mouseUp(with e: NSEvent) { owner?.mouseUp() }
+    // Hook for later: drag out of the panel, several at once like Finder (clipboard.md, «Decided»).
+}
+
+final class PlainRow: NSTableRowView {
+    override func drawSelection(in r: NSRect) {}
+    override func drawBackground(in r: NSRect) {}
+}
+
+final class HeadCell: NSTableCellView {
+    static let id = NSUserInterfaceItemIdentifier("head")
+    let label = NSTextField(labelWithString: "")
+    override var isFlipped: Bool { true }
+    init() {
+        super.init(frame: NSRect(x: 0, y: 0, width: panelSize.width, height: 29))
+        identifier = Self.id
+        label.font = .systemFont(ofSize: 12, weight: .semibold)
+        label.textColor = .secondaryLabelColor
+        label.frame = NSRect(x: listInset + 12, y: 11, width: panelSize.width - 2 * listInset - 24, height: 15)
+        addSubview(label)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+}

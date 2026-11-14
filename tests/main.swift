@@ -1,0 +1,509 @@
+// Off-screen tests of Clip, built by ./test from the app's own sources (all but main.swift).
+//   clip-tests unit                 selection, facts, store, delete/undo, search speed, the paste folder
+//   clip-tests capture              the monitor on a private named pasteboard
+//   clip-tests copy                 the one-write copy on a private named pasteboard: items and types, order, files
+//   clip-tests general              capture and copy on the GENERAL pasteboard, his content saved before and put back
+//                                   after (run outside Claude's command sandbox: inside it, file URLs after the first
+//                                   are dropped by sandbox extensions)
+//   clip-tests render APP THEME OUT [motion]   the panel drawn in a window under the desktop (never on the screen),
+//                                   captured with screencapture -l; «motion» steps the leaving animation 20 × slower
+import AppKit
+import UniformTypeIdentifiers
+
+let argv = CommandLine.arguments
+var failures = 0, passed = 0
+func check(_ ok: Bool, _ what: @autoclosure () -> String) {
+    if ok { passed += 1 } else { failures += 1; print("FAIL \(what())") }
+}
+func finish(_ name: String) -> Never {
+    print(failures == 0 ? "\(name): \(passed) ok" : "\(name): \(failures) failed, \(passed) ok")
+    exit(failures == 0 ? 0 : 1)
+}
+func tmpDir(_ tag: String) -> URL {
+    let u = FileManager.default.temporaryDirectory.appendingPathComponent("clip-test-\(tag)-\(UUID().uuidString.prefix(8))")
+    try! FileManager.default.createDirectory(at: u, withIntermediateDirectories: true)
+    return u
+}
+/// Runs the main run loop until `done` or the timeout; true when done.
+func wait(_ timeout: Double, _ done: () -> Bool) -> Bool {
+    let end = Date().addingTimeInterval(timeout)
+    while !done() && Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+    return done()
+}
+func testImage(_ text: String, _ rgb: (CGFloat, CGFloat, CGFloat), w: Int = 400, h: Int = 250) -> Data {
+    let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h, bitsPerSample: 8, samplesPerPixel: 4,
+                               hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+    NSColor(deviceRed: rgb.0, green: rgb.1, blue: rgb.2, alpha: 1).setFill()
+    NSRect(x: 0, y: 0, width: w, height: h).fill()
+    NSAttributedString(string: text, attributes: [.font: NSFont.boldSystemFont(ofSize: 80), .foregroundColor: NSColor.white])
+        .draw(at: NSPoint(x: 30, y: 60))
+    NSGraphicsContext.restoreGraphicsState()
+    return rep.representation(using: .png, properties: [:])!
+}
+func item(_ pairs: [(String, Data)]) -> NSPasteboardItem {
+    let it = NSPasteboardItem()
+    for (t, d) in pairs { it.setData(d, forType: .init(t)) }
+    return it
+}
+func types(_ pb: NSPasteboard) -> [[String]] { (pb.pasteboardItems ?? []).map { $0.types.map(\.rawValue) } }
+let png = NSPasteboard.PasteboardType.png.rawValue, tiff = NSPasteboard.PasteboardType.tiff.rawValue
+let furl = NSPasteboard.PasteboardType.fileURL.rawValue, str = NSPasteboard.PasteboardType.string.rawValue
+let rtf = NSPasteboard.PasteboardType.rtf.rawValue, html = NSPasteboard.PasteboardType.html.rawValue
+
+/// A store with entries made through the real path (prepare + add), newest last in `specs`.
+func seeded(_ dir: URL, _ specs: [(Snapshot, Date)]) -> (Store, [Int64]) {
+    let s = try! Store(dir: dir)
+    var ids: [Int64] = []
+    for (snap, d) in specs { let (e, it) = prepare(snap, dir: dir, at: d)!; ids.append(s.add(e, it)) }
+    return (s, ids)
+}
+func textSnap(_ t: String, app: String? = "com.apple.Safari") -> Snapshot {
+    Snapshot(items: [[Rep(type: str, data: Data(t.utf8))]], source: app)
+}
+func imageSnap(_ d: Data, app: String? = "com.geragaraza.pixlift") -> Snapshot {
+    Snapshot(items: [[Rep(type: png, data: d)]], source: app)
+}
+
+// MARK: unit
+
+func unit() {
+    // Selection, Finder's way plus the order.
+    var s = Selection()
+    let list: [Int64] = [10, 9, 8, 7, 6, 5]   // newest first, as shown
+    s.click(9); check(s.order == [9], "click")
+    s.toggle(7); s.toggle(10); check(s.order == [9, 7, 10] && s.badge(10) == 3 && s.badge(9) == 1, "⌘-click order \(s.order)")
+    s.toggle(7); check(s.order == [9, 10] && s.badge(7) == nil, "⌘-click off")
+    s.click(9); s.extend(to: 6, in: list); check(s.order == [9, 8, 7, 6], "⇧-click down \(s.order)")
+    s.extend(to: 10, in: list); check(s.order == [9, 10], "⇧-click replaces the range \(s.order)")
+    s.click(8); s.toggle(5); s.extend(to: 7, in: list); check(s.order == [8, 5, 6, 7], "⌘ then ⇧ keeps what was picked \(s.order)")
+    s.all(list); check(s.order == [5, 6, 7, 8, 9, 10], "⌘A = copy order, oldest first")
+    s.clear(); s.move(1, in: list, extending: false); check(s.order == [10], "↓ from nothing = first row")
+    s.move(1, in: list, extending: false); s.move(1, in: list, extending: true); s.move(1, in: list, extending: true)
+    check(s.order == [9, 8, 7], "⇧↓ stretches \(s.order)")
+    s.move(-1, in: list, extending: false); check(s.order == [8], "↑ from the cursor \(s.order)")
+    s.click(10); s.move(-1, in: list, extending: false); check(s.order == [10], "↑ stops at the top")
+    s.click(9); s.toggle(7); s.remove([9]); check(s.order == [7], "delete leaves the order")
+    var one = Selection(); one.click(5); check(one.badge(5) == nil, "no badge for one")
+
+    // Plurals, sizes, facts.
+    strings = Bundle.main
+    check(counted(1, "object|objects") == "1\u{00A0}object" && counted(4, "object|objects") == "4\u{00A0}objects", "en plurals")
+    check(wordCount("Слушай, мне нужен пауэрбанк — для поездок; it's fine") == 8, "words \(wordCount("Слушай, мне нужен пауэрбанк — для поездок; it's fine"))")
+    check(Int(imageTokens(3456, 2234).rounded()) == 1533, "image tokens \(imageTokens(3456, 2234))")
+    check(isColor("#0A84FF") && !isColor("#0A84FG") && rgb("#0A84FF")! == (10, 132, 255), "colour")
+
+    // Store: WAL, permissions, dedupe, Recently Deleted, retention, orphan files.
+    let dir = tmpDir("store")
+    let img = testImage("1", (0.1, 0.4, 0.9))
+    let now = Date()
+    let (st, ids) = seeded(dir, [(textSnap("alpha"), now.addingTimeInterval(-40 * 86400)), (imageSnap(img), now.addingTimeInterval(-60)),
+                                 (textSnap("beta"), now)])
+    check(st.entries().map(\.title) == ["beta", L("Image"), "alpha"], "newest first \(st.entries().map(\.title))")
+    let mode = (try? FileManager.default.attributesOfItem(atPath: dir.path)[.posixPermissions] as? Int) ?? 0
+    check(mode == 0o700, "store folder 0700 (\(String(mode, radix: 8)))")
+    let jm = Process(); jm.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+    jm.arguments = [dir.appendingPathComponent("clip.sqlite").path, "PRAGMA journal_mode;"]
+    let pipe = Pipe(); jm.standardOutput = pipe; try? jm.run(); jm.waitUntilExit()
+    check(String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?.contains("wal") == true, "WAL")
+    let imgEntry = st.entries().first { $0.kind == .image }!
+    check(imgEntry.thumb == "images/" + sha(img) + ".png" && FileManager.default.fileExists(atPath: dir.appendingPathComponent(imgEntry.thumb!).path),
+          "image stored as PNG named by its SHA-256")
+    check(imgEntry.width == 400 && imgEntry.height == 250, "image size")
+    // The same image as TIFF only (as Safari copies) is the same picture once converted: one file, one entry.
+    let tiffData = NSBitmapImageRep(data: img)!.tiffRepresentation!
+    let (e2, it2) = prepare(Snapshot(items: [[Rep(type: tiff, data: tiffData)]], source: nil), dir: dir)!
+    check(it2[0].map(\.type) == [png], "TIFF alone kept as PNG")
+    let again = st.add(e2, it2)
+    let pngFiles = (try? FileManager.default.contentsOfDirectory(atPath: dir.appendingPathComponent("images").path))?.count ?? 0
+    check(pngFiles <= 2, "image files deduped (\(pngFiles))")
+    let n0 = st.entries().count
+    let id3 = st.add(prepare(textSnap("alpha"), dir: dir)!.0, prepare(textSnap("alpha"), dir: dir)!.1)
+    check(st.entries().count == n0 && id3 == ids[0] && st.entries().first?.id == ids[0], "same copy again = moved to the top, no twin")
+    st.delete([ids[2]])
+    check(!st.entries().contains { $0.id == ids[2] } && st.entries(deleted: true).map(\.id) == [ids[2]], "delete into Recently Deleted")
+    st.undelete([ids[2]]); check(st.entries().contains { $0.id == ids[2] }, "undelete")
+    st.delete([ids[1]], at: now.addingTimeInterval(-31 * 86400))
+    if again != ids[1] { st.delete([again], at: now.addingTimeInterval(-31 * 86400)) }
+    check(st.keep == .days30, "keep history: 30 days by default")
+    st.keep = .forever
+    let reopened = try! Store(dir: dir)
+    check(reopened.keep == .forever, "keep setting stored")
+    reopened.keep = .days30
+    reopened.purge(now: now.addingTimeInterval(3600))
+    check(reopened.entries(deleted: true).isEmpty, "Recently Deleted emptied after 30 days")
+    reopened.purge(now: now.addingTimeInterval(31 * 86400))
+    let leftImages = (try? FileManager.default.contentsOfDirectory(atPath: dir.appendingPathComponent("images").path)) ?? []
+    check(leftImages.isEmpty, "orphan image files removed \(leftImages)")
+    check(reopened.entries().isEmpty, "30-day history purged \(reopened.entries().map(\.title))")
+
+    // Facts of a selection (en).
+    let fdir = tmpDir("facts")
+    let (fs, fids) = seeded(fdir, [(textSnap("Привет, мир"), now), (textSnap("hello world again"), now), (imageSnap(testImage("2", (1, 0, 0), w: 3456, h: 2234)), now)])
+    let f = Facts(fids.compactMap { id in fs.entries().first { $0.id == id } })
+    check(f.head == "3\u{00A0}objects", "facts head \(f.head)")
+    check(f.parts.count == 4 && f.parts[0] == "28\u{00A0}characters" && f.parts[1] == "5\u{00A0}words", "facts parts \(f.parts)")
+    check(f.parts[2].hasPrefix("≈"), "tokens \(f.parts)")
+
+    // Delete and undo through the panel's controller (no window).
+    let ddir = tmpDir("delete")
+    let base = now.addingTimeInterval(-600)
+    let (ds, did) = seeded(ddir, (0..<6).map { (textSnap("item \($0)"), base.addingTimeInterval(Double($0))) })
+    let pc = PanelController(store: ds, monitor: nil, onScreen: false)
+    let shown0 = pc.shown.map(\.id)
+    check(shown0 == did.reversed(), "panel lists newest first")
+    pc.mouseDown(row: 2, flags: [], clicks: 1); pc.mouseDown(row: 4, flags: .command, clicks: 1)   // row 0 is the «Today» head
+    let picked = pc.sel.order
+    check(picked == [shown0[1], shown0[3]], "click + ⌘-click \(picked)")
+    pc.deleteSelection()
+    check(pc.shown.count == 4 && pc.sel.order == [shown0[2]], "⌘⌫: gone, the next row takes the selection \(pc.sel.order)")
+    check(ds.entries(deleted: true).count == 2, "⌘⌫ goes to Recently Deleted")
+    check(pc.undoDelete() && pc.shown.map(\.id) == shown0 && pc.sel.order == picked, "⌘Z: back in place, picked as before")
+    pc.selectAll(); check(pc.sel.order == did, "⌘A in copy order")
+    pc.mouseDown(row: 1, flags: [], clicks: 1)
+    check(pc.sel.order == did, "a plain click on a picked row keeps the set until the mouse goes up")
+    pc.mouseUp(); check(pc.sel.order == [shown0[0]], "…then picks the one row")
+
+    // Keys through the real panel window (made, never shown): ⌘A, ⌘⌫, ⌘Z, arrows, ⌘C with one write, Esc.
+    let kpb = NSPasteboard(name: .init("com.geragaraza.clip.test.keys.\(getpid())"))
+    let kc = PanelController(store: ds, monitor: nil, onScreen: true)
+    kc.pasteboard = kpb
+    func key(_ ch: String, _ code: UInt16, _ mods: NSEvent.ModifierFlags = .command) -> Bool {
+        let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: mods, timestamp: 0, windowNumber: kc.window!.windowNumber,
+                                 context: nil, characters: ch, charactersIgnoringModifiers: ch, isARepeat: false, keyCode: code)!
+        return kc.window!.performKeyEquivalent(with: e)
+    }
+    func cmd(_ s: Selector) { _ = kc.control(kc.view.field, textView: NSTextView(), doCommandBy: s) }
+    check(key("a", 0) && kc.sel.order == did, "⌘A through the window")
+    check(key("\u{7f}", 51) && kc.shown.isEmpty && ds.entries(deleted: true).count == 6, "⌘⌫ through the window")
+    check(key("z", 6) && kc.shown.count == 6 && kc.sel.order == did, "⌘Z through the window")
+    cmd(#selector(NSResponder.moveDown(_:))); cmd(#selector(NSResponder.moveDown(_:)))
+    cmd(#selector(NSResponder.moveDownAndModifySelection(_:)))
+    check(kc.sel.order == [shown0[2], shown0[3]], "↓ ↓ from the top, then ⇧↓ \(kc.sel.order)")
+    check(key("c", 8) && kpb.string(forType: .string) == "item 3\nitem 2", "⌘C writes the picked rows in one item: \(kpb.string(forType: .string) ?? "nil")")
+    check(!key("c", 8, [.command, .shift]), "⇧⌘C is not ours")
+    kpb.releaseGlobally()
+
+    // ⌥⌘C registers (Carbon, no permission), and is let go at once.
+    let hk = App(store: ds)
+    check(hk.registerHotKey() == noErr, "⌥⌘C registered")
+    hk.unregisterHotKey()
+
+    // Search speed: «search filtering in one frame» on a big history (5 000 entries of ~1.5 KB text).
+    let sdir = tmpDir("search")
+    let ss = try! Store(dir: sdir)
+    let words = ["пауэрбанк", "самолёт", "аккумулятор", "ноутбук", "Telegram", "screenshot", "power", "bank", "заряд", "порт"]
+    for i in 0..<5000 {
+        var t = ""; for k in 0..<180 { t += words[(i * 7 + k * 3) % words.count] + " " }
+        t += "уникум\(i)"
+        let (e, it) = prepare(textSnap(t), dir: sdir, at: now.addingTimeInterval(Double(-i)))!
+        ss.add(e, it)
+    }
+    let sc = PanelController(store: ss, monitor: nil, onScreen: false)
+    let w0 = CFAbsoluteTimeGetCurrent(); sc.warmSearch(wait: true)
+    print(String(format: "search: folding 5 000 entries once (background, at launch): %.0f ms", (CFAbsoluteTimeGetCurrent() - w0) * 1000))
+    var times: [Double] = []
+    for q in ["у", "ун", "уни", "уникум4999", "самолёт", ""] {
+        sc.view.field.stringValue = q
+        let t0 = CFAbsoluteTimeGetCurrent(); sc.filter(); times.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+    }
+    sc.view.field.stringValue = "уникум4999"; sc.filter()
+    check(sc.shown.count == 1, "search finds one in 5 000")
+    sc.view.field.stringValue = "САМОЛЕТ"; sc.filter()
+    check(sc.shown.count == 5000, "search ignores case and ё/е (\(sc.shown.count))")
+    check(times[1...4].allSatisfy { $0 < 16 }, "a key filters within one frame at 60 Hz (\(times))")
+    print(String(format: "search over 5 000 entries: %@ ms per keystroke", times.map { String(format: "%.1f", $0) }.joined(separator: " / ")))
+
+    // The paste folder: older than a day goes, the rest stays; at launch everything goes.
+    let pdir = tmpDir("paste")
+    let ps = try! Store(dir: pdir)
+    let old = pdir.appendingPathComponent("paste/old"), fresh = pdir.appendingPathComponent("paste/new")
+    for d in [old, fresh] { try! FileManager.default.createDirectory(at: d, withIntermediateDirectories: true) }
+    try! FileManager.default.setAttributes([.creationDate: now.addingTimeInterval(-25 * 3600)], ofItemAtPath: old.path)
+    Clip.cleanPasteFolder(ps, all: false)
+    check(!FileManager.default.fileExists(atPath: old.path) && FileManager.default.fileExists(atPath: fresh.path), "paste files: 24 h")
+    Clip.cleanPasteFolder(ps, all: true)
+    check(!FileManager.default.fileExists(atPath: fresh.path), "paste files: all at launch")
+
+    for d in [dir, fdir, ddir, sdir, pdir] { try? FileManager.default.removeItem(at: d) }
+    finish("unit")
+}
+
+// MARK: capture
+
+/// Writes `write` to `pb` and waits for the monitor; returns what it captured (nil = nothing within `timeout`).
+func captured(_ m: Monitor, _ pb: NSPasteboard, timeout: Double = 1.5, _ write: () -> Void) -> (Snapshot?, Double) {
+    var got: Snapshot?
+    m.onCopy = { got = $0 }
+    let t0 = CFAbsoluteTimeGetCurrent()
+    write()
+    _ = wait(timeout) { got != nil }
+    return (got, CFAbsoluteTimeGetCurrent() - t0)
+}
+
+func captureTests(_ pb: NSPasteboard, general: Bool) {
+    let m = Monitor(pb)
+    m.start()
+    let dir = tmpDir("capture")
+    var lat: [Double] = []
+
+    // Twelve files from Finder = one entry with twelve items.
+    let files = (1...12).map { i -> URL in
+        let u = dir.appendingPathComponent("file \(i).txt"); try! Data("file \(i)".utf8).write(to: u); return u }
+    var (s, t) = captured(m, pb) { pb.clearContents(); pb.writeObjects(files as [NSURL]) }
+    lat.append(t)
+    check(s?.items.count == 12 && s!.items.allSatisfy { $0.contains { $0.type == furl } }, "12 files = one copy of 12 items (\(s?.items.count ?? 0))")
+    check(s.map { $0.items.flatMap { $0 }.allSatisfy { !isSynthesized($0.type) } } == true, "no system-made aliases kept")
+    if let s, let (e, _) = prepare(s, dir: dir) {
+        check(e.kind == .files && e.count == 12 && e.title == counted(12, "object|objects"), "files entry \(e.title)")
+    }
+
+    // Rich text: every type kept.
+    (s, t) = captured(m, pb) {
+        pb.clearContents()
+        pb.writeObjects([item([(rtf, Data("{\\rtf1 {\\b bold} text}".utf8)), (html, Data("<b>bold</b> text".utf8)), (str, Data("bold text".utf8))])])
+    }
+    lat.append(t)
+    check(Set(s?.items.first?.map(\.type) ?? []).isSuperset(of: [rtf, html, str]), "rich text: RTF, HTML and text kept \(s?.items.first?.map(\.type) ?? [])")
+
+    // Several images in one copy: every one kept (ClipBook kept the first, Maccy let the last overwrite).
+    let imgs = [testImage("A", (0.9, 0.2, 0.2)), testImage("B", (0.2, 0.7, 0.2)), testImage("C", (0.2, 0.3, 0.9))]
+    (s, t) = captured(m, pb) { pb.clearContents(); pb.writeObjects(imgs.map { item([(png, $0)]) }) }
+    lat.append(t)
+    if let s, let (e, items) = prepare(s, dir: dir) {
+        check(e.kind == .image && items.count == 3 && Set(items.compactMap { $0.first?.file }).count == 3, "three images = one entry of three")
+    } else { check(false, "three images captured") }
+
+    // Writes no person made are skipped; a password manager's copy is kept, marked concealed.
+    for marker in ["org.nspasteboard.TransientType", "org.nspasteboard.AutoGeneratedType", "de.petermaurer.TransientPasteboardType"] {
+        (s, _) = captured(m, pb, timeout: 0.8) { pb.clearContents(); pb.writeObjects([item([(str, Data("secret".utf8)), (marker, Data())])]) }
+        check(s == nil, "\(marker) skipped")
+    }
+    (s, t) = captured(m, pb) { pb.clearContents(); pb.writeObjects([item([(str, Data("hunter2".utf8)), ("org.nspasteboard.ConcealedType", Data())])]) }
+    check(s?.concealed == true, "concealed (password) kept")
+
+    // Our own write: skipped by its count and by the marker inside the item.
+    (s, _) = captured(m, pb, timeout: 0.8) {
+        pb.clearContents(); pb.writeObjects([item([(str, Data("ours".utf8)), (NSPasteboard.PasteboardType.own.rawValue, Data("1".utf8))])])
+    }
+    check(s == nil, "own write skipped by its marker")
+    (s, _) = captured(m, pb, timeout: 0.8) { pb.clearContents(); pb.setString("ours too", forType: .string); m.ownCount = pb.changeCount }
+    check(s == nil, "own write skipped by its count")
+
+    // Chromium's way: the count moves on an empty clear, the content comes later without a new count.
+    (s, t) = captured(m, pb, timeout: 4) {
+        pb.clearContents()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { pb.setString("late text", forType: .string) }
+    }
+    check(s.flatMap { String(data: $0.items[0][0].data!, encoding: .utf8) } == "late text", "empty read retried: late write caught after \(String(format: "%.2f", t)) s")
+
+    // The copying app's own declaration wins over the app in front.
+    (s, _) = captured(m, pb) { pb.clearContents(); pb.writeObjects([item([(str, Data("from KeePassXC".utf8)), ("org.nspasteboard.source", Data("org.keepassxc.keepassxc".utf8))])]) }
+    check(s?.source == "org.keepassxc.keepassxc", "source from org.nspasteboard.source")
+
+    m.stop()
+    print(String(format: "capture latency (write → captured): %@ s", lat.map { String(format: "%.2f", $0) }.joined(separator: " / ")))
+    try? FileManager.default.removeItem(at: dir)
+}
+
+// MARK: copy
+
+func copyTests(_ pb: NSPasteboard) {
+    let dir = tmpDir("copy")
+    let now = Date()
+    let imgs = [testImage("1", (0.9, 0.2, 0.2)), testImage("2", (0.2, 0.7, 0.2)), testImage("3", (0.2, 0.3, 0.9))]
+    let files = (1...3).map { i -> URL in let u = dir.appendingPathComponent("doc \(i).pdf"); try! Data("x".utf8).write(to: u); return u }
+    let filesSnap = Snapshot(items: files.map { [Rep(type: furl, data: Data($0.absoluteString.utf8))] }, source: "com.apple.finder")
+    let rich = Snapshot(items: [[Rep(type: rtf, data: Data("{\\rtf1 {\\b bold}}".utf8)), Rep(type: html, data: Data("<b>bold</b>".utf8)),
+                                 Rep(type: str, data: Data("bold".utf8))]], source: "com.apple.TextEdit")
+    var specs: [(Snapshot, Date)] = imgs.enumerated().map { (imageSnap($1), now.addingTimeInterval(Double($0))) }
+    specs += [(textSnap("first"), now.addingTimeInterval(10)), (textSnap("second"), now.addingTimeInterval(11)),
+              (textSnap("third"), now.addingTimeInterval(12)), (filesSnap, now.addingTimeInterval(13)), (rich, now.addingTimeInterval(14))]
+    let (st, ids) = seeded(dir, specs)
+    func sel(_ k: [Int]) -> [(Entry, [[Rep]])] { k.map { i in (st.entries().first { $0.id == ids[i] }!, st.reps(ids[i])) } }
+    let own = NSPasteboard.PasteboardType.own.rawValue
+
+    // Three images picked 3, 1, 2: three items, each a real file + PNG + TIFF, in the picked order.
+    var r = Clip.write(sel([2, 0, 1]), store: st, to: pb)
+    var ty = types(pb)
+    check(ty.count == 3 && ty.allSatisfy { Set($0).isSuperset(of: [furl, png, tiff, own]) }, "3 images = 3 items of file URL + PNG + TIFF \(ty)")
+    check(r.urls == 3 && r.expected == 3, "file URLs verified after the write (\(r.urls)/\(r.expected))")
+    let urls = (pb.readObjects(forClasses: [NSURL.self]) as? [URL]) ?? []
+    let order = urls.compactMap { try? Data(contentsOf: $0) }.map(sha)
+    check(order == [2, 0, 1].map { sha(imgs[$0]) }, "images arrive in the picked order, as real files")
+    check(urls.allSatisfy { $0.path.hasPrefix(dir.appendingPathComponent("paste").path) } && urls.map(\.lastPathComponent) == ["\(L("Image")) 1.png", "\(L("Image")) 2.png", "\(L("Image")) 3.png"],
+          "temporary files in paste/, readable names \(urls.map(\.lastPathComponent))")
+    let tiffBack = pb.pasteboardItems?.first?.data(forType: .tiff)
+    check(tiffBack.flatMap { NSBitmapImageRep(data: $0) }?.pixelsWide == 400, "TIFF made on request")
+    check(pb.pasteboardItems?.allSatisfy { $0.string(forType: .source) == (Bundle.main.bundleIdentifier ?? "com.geragaraza.clip") } == true, "source marked")
+
+    // Three texts: one item, joined by a new line, in the picked order.
+    r = Clip.write(sel([5, 3, 4]), store: st, to: pb)
+    check(types(pb).count == 1 && pb.string(forType: .string) == "third\nfirst\nsecond", "texts joined into one item: \(pb.string(forType: .string) ?? "nil")")
+
+    // One rich text: kept rich.
+    r = Clip.write(sel([7]), store: st, to: pb)
+    ty = types(pb)
+    check(ty.count == 1 && Set(ty[0]).isSuperset(of: [rtf, html, str, own]), "one rich text keeps RTF and HTML \(ty)")
+
+    // A Finder copy of three files: three items with their URLs, as Finder wrote them.
+    r = Clip.write(sel([6]), store: st, to: pb)
+    check(((pb.readObjects(forClasses: [NSURL.self]) as? [URL]) ?? []) == files, "files go back as the same file URLs")
+
+    // Text + image + files: one write, one item per thing, the text where it was picked.
+    r = Clip.write(sel([3, 0, 6]), store: st, to: pb)
+    ty = types(pb)
+    check(ty.count == 5 && ty[0].contains(str) && !ty[0].contains(furl) && ty[1].contains(png) && ty[2...].allSatisfy { $0.contains(furl) },
+          "mixed selection: 5 items in order \(ty)")
+    check(ty.allSatisfy { $0.contains(own) } && ty.count == (pb.pasteboardItems?.count ?? 0), "the marker sits inside the items, no item of its own")
+
+    // The monitor does not take our write back into the history.
+    let m = Monitor(pb)
+    var got = false
+    m.onCopy = { _ in got = true }
+    m.start()
+    let w = Clip.write(sel([0, 1]), store: st, to: pb)
+    m.ownCount = w.count
+    _ = wait(0.8) { got }
+    check(!got, "our copy is not recorded again")
+    m.stop()
+    try? FileManager.default.removeItem(at: dir)
+}
+
+// MARK: the general pasteboard, his content kept
+
+func general() {
+    let pb = NSPasteboard.general
+    // Saved as data, every item and type, and put back after; if anything else wrote meanwhile (he copied), his new
+    // copy wins and nothing is put back.
+    let saved: [[(String, Data)]] = (pb.pasteboardItems ?? []).map { it in it.types.compactMap { t in it.data(forType: t).map { (t.rawValue, $0) } } }
+    print("saved his clipboard: \(saved.count) items")
+    var last = pb.changeCount
+    func mark() { last = pb.changeCount }
+    defer {
+        if pb.changeCount == last {
+            pb.clearContents()
+            if !saved.isEmpty { pb.writeObjects(saved.map(item)) }
+            print("restored his clipboard: \(pb.pasteboardItems?.count ?? 0) items")
+        } else { print("the clipboard changed during the test: left as it is") }
+    }
+    let dir = tmpDir("general")
+    let imgs = [testImage("1", (0.9, 0.2, 0.2)), testImage("2", (0.2, 0.7, 0.2)), testImage("3", (0.2, 0.3, 0.9))]
+    let (st, ids) = seeded(dir, imgs.enumerated().map { (imageSnap($1), Date().addingTimeInterval(Double($0))) })
+    let r = Clip.write(ids.map { id in (st.entries().first { $0.id == id }!, st.reps(id)) }, store: st, to: pb)
+    mark()
+    let ty = types(pb)
+    check(ty.count == 3 && ty.allSatisfy { Set($0).isSuperset(of: [furl, png, tiff]) }, "general: 3 items of file URL + PNG + TIFF \(ty)")
+    check(r.urls == 3, "general: all 3 file URLs present (\(r.urls)/\(r.expected)); 1 means the command sandbox")
+    print("item layout on the general pasteboard:"); for (i, t) in ty.enumerated() { print("  item \(i): \(t.joined(separator: ", "))") }
+
+    // Capture from the general pasteboard: twelve files.
+    let m = Monitor(pb)
+    m.start()
+    let files = (1...12).map { i -> URL in let u = dir.appendingPathComponent("f\(i).txt"); try! Data("\(i)".utf8).write(to: u); return u }
+    let (s, t) = captured(m, pb) { pb.clearContents(); pb.writeObjects(files as [NSURL]); mark() }
+    check(s?.items.count == 12, "general: 12 files captured as one copy of 12 (\(s?.items.count ?? 0)) in \(String(format: "%.2f", t)) s")
+    m.stop()
+    if #available(macOS 15.4, *) {
+        let b = pb.accessBehavior
+        print("NSPasteboard.general.accessBehavior = \(b.rawValue) (0 default, 1 ask, 2 alwaysAllow, 3 alwaysDeny)")
+    }
+    try? FileManager.default.removeItem(at: dir)
+}
+
+// MARK: render
+
+/// The approved mockup's content, through the real capture path, into a store; the panel drawn over a desktop
+/// picture in one window under the desktop (never seen), captured with screencapture -l.
+func render(app: String, theme: String, out: String, motion: Bool) {
+    strings = Bundle(path: app)!
+    let res = "/Users/harazha/.local/share/clipboard/mock/res/"
+    let dir = tmpDir("render")
+    let day = Calendar.current.startOfDay(for: Date())
+    func at(_ h: Int, _ m: Int, _ d: Int = 0) -> Date { day.addingTimeInterval(Double(d * 86400 + h * 3600 + m * 60)) }
+    func txt(_ n: String) -> String { ((try? String(contentsOfFile: res + "text/\(n).txt", encoding: .utf8)) ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }
+    func shot(_ n: String) -> Data { try! Data(contentsOf: URL(fileURLWithPath: res + "shots/" + n)) }
+    let video = URL(fileURLWithPath: res + "video.mp4")
+    let twelve = (0..<12).map { URL(fileURLWithPath: res + (["bg-0.jpg", "bg-1.jpg", "aer_60.jpg", "img_Mac_Blue-0.jpg", "img_Mac_Purple-0.jpg", "video.mp4"][$0 % 6])) }
+    let link = Snapshot(items: [[Rep(type: str, data: Data("https://geragaraza.com".utf8)), Rep(type: "public.url", data: Data("https://geragaraza.com".utf8)),
+                                 Rep(type: "public.url-name", data: Data("Herman Harazha".utf8))]], source: "com.apple.Safari")
+    func files(_ u: [URL], _ app: String) -> Snapshot { Snapshot(items: u.map { [Rep(type: furl, data: Data($0.absoluteString.utf8))] }, source: app) }
+    let specs: [(Snapshot, Date)] = [
+        (imageSnap(shot("2026-11-13 18-47-05.png"), app: "com.geragaraza.pixlift"), at(18, 47, -1)),
+        (textSnap(txt("karenina"), app: "com.apple.iBooksX"), at(19, 12, -1)),
+        (imageSnap(shot("2026-11-14 07-11-29.png")), at(7, 11)),
+        (imageSnap(shot("2026-11-14 07-11-38.png")), at(7, 11)),
+        (textSnap(txt("pageB")), at(7, 16)),
+        (files(twelve, "com.apple.finder"), at(7, 20)),
+        (files([video], "com.apple.finder"), at(7, 22)),
+        (textSnap(txt("dictated"), app: "com.geragaraza.stt"), at(7, 24)),
+        (link, at(7, 27)),
+        (textSnap(txt("pageA")), at(7, 28)),
+        (textSnap("#0A84FF", app: "com.apple.DigitalColorMeter"), at(7, 30)),
+        (textSnap(txt("pageC")), at(7, 31)),
+        (imageSnap(shot("2026-11-14 07-34-26.png")), at(7, 34)),
+    ]
+    let (st, ids) = seeded(dir, specs)
+    let pc = PanelController(store: st, monitor: nil, onScreen: false)
+    pc.forceFocus = true
+    // Picked in the mockup's order: the dictated message, page A, page C, the screenshot.
+    let rowOf = { (id: Int64) in pc.rows.firstIndex { if case .entry(let i) = $0 { return pc.shown[i].id == id }; return false }! }
+    pc.mouseDown(row: rowOf(ids[7]), flags: [], clicks: 1)
+    for k in [9, 11, 12] { pc.mouseDown(row: rowOf(ids[k]), flags: .command, clicks: 1) }
+
+    NSApp.appearance = NSAppearance(named: theme == "dark" ? .darkAqua : .aqua)
+    let SW: CGFloat = 1728, SH: CGFloat = 1117
+    let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: SW, height: SH), styleMask: [.borderless], backing: .buffered, defer: false)
+    win.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)) - 1)   // under the wallpaper: never seen
+    win.appearance = NSApp.appearance
+    let root = Flipped(frame: NSRect(x: 0, y: 0, width: SW, height: SH))
+    let bg = NSImageView(frame: root.bounds)
+    bg.image = NSImage(contentsOfFile: res + (theme == "dark" ? "bg-1.jpg" : "bg-0.jpg"))
+    bg.imageScaling = .scaleAxesIndependently
+    root.addSubview(bg)
+    pc.view.frame.origin = NSPoint(x: (SW - panelSize.width) / 2, y: (SH - panelSize.height) / 2 - 20)
+    root.addSubview(pc.view)
+    win.contentView = root
+    win.setFrame(NSRect(x: 0, y: 0, width: SW, height: SH), display: true)
+    win.orderFrontRegardless()
+    func shoot(_ path: String) {
+        root.layoutSubtreeIfNeeded(); root.display()
+        let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+        p.arguments = ["-x", "-o", "-l\(win.windowNumber)", path]; try? p.run(); p.waitUntilExit()
+    }
+    _ = wait(1.5) { false }
+    shoot(out)
+    if motion {
+        // The leaving animation, 20 × slower, a frame every 1/60 s of real time: blur and growth on the glass (the
+        // window's own fade is replaced by the view's here, since the picture behind shares the window).
+        let d = 0.085 * 20
+        pc.view.animateOut(duration: d)
+        NSAnimationContext.runAnimationGroup { c in c.duration = d; c.timingFunction = CAMediaTimingFunction(name: .easeIn); pc.view.animator().alphaValue = 0 }
+        let t0 = CFAbsoluteTimeGetCurrent()
+        for k in 0..<6 {
+            _ = wait(max(0, t0 + Double(k) * d / 5 - CFAbsoluteTimeGetCurrent())) { false }
+            shoot(out.replacingOccurrences(of: ".png", with: "-out\(k).png"))
+        }
+    }
+    try? FileManager.default.removeItem(at: dir)
+    exit(0)
+}
+
+// MARK: main
+
+_ = NSApplication.shared
+NSApp.setActivationPolicy(.accessory)   // no Dock icon while the tests draw
+switch argv.count > 1 ? argv[1] : "" {
+case "unit": unit()
+case "capture":
+    let pb = NSPasteboard(name: .init("com.geragaraza.clip.test.\(getpid())"))
+    captureTests(pb, general: false); pb.releaseGlobally(); finish("capture")
+case "copy":
+    let pb = NSPasteboard(name: .init("com.geragaraza.clip.test.\(getpid())"))
+    copyTests(pb); pb.releaseGlobally(); finish("copy")
+case "general": general(); finish("general")
+case "render" where argv.count >= 5: render(app: argv[2], theme: argv[3], out: argv[4], motion: argv.count > 5 && argv[5] == "motion")
+default:
+    print("usage: clip-tests unit | capture | copy | general | render APP THEME OUT [motion]"); exit(2)
+}
