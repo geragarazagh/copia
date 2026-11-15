@@ -31,10 +31,14 @@ final class PasteQueue: NSObject {
     /// After the last item is pasted (the shelf decides what then).
     var onEmptied: () -> Void = {}
 
-    /// The asks of one paste: an app reads several types (plain, rich, HTML; file URL, PNG, TIFF) one after another.
-    /// The next item comes once they have stopped for this long (Clipbara settles for 350 ms; measured here: TextEdit
-    /// asks for its last type ~40 ms after the first, Notes ~120 ms).
-    static let settle = 0.3
+    /// The asks of one paste: an app reads several types (plain, rich, HTML; file URL, PNG, TIFF) one after another, in
+    /// one burst. The next item comes once they have stopped for this long. It must be shorter than the gap between
+    /// two quick presses: until the next item is placed, a second ⌘V reads the bytes the pasteboard already holds and
+    /// never asks, so it pastes the same item again (his trial 2026-11-15 10:00, 1-2-3-4-5-6 in about a second: the
+    /// first 0.3 s, Clipbara's 350 ms, pasted one item many times). A fast hand presses every 90-150 ms; measured in
+    /// `cs` (COPIA_TRACE), TextEdit and Notes ask for one type per paste, plain or RTF, so 25 ms covers the burst and
+    /// keeps up with presses down to about 40 ms apart.
+    static let settle = 0.025
     /// Counted for the tests and the trial: asks served, and how many of them were taken as pastes.
     private(set) var asks = 0, pastes = 0
 
@@ -44,7 +48,7 @@ final class PasteQueue: NSObject {
     private var pasting = false
     private var settleTimer: Timer?
     private var renewTimer: Timer?
-    private var renewAfter = 0.3
+    private var renewAfter = 0.05
     /// The tests set the times of the last key and click (CGEventSource gives the session's real ones).
     var sinceKey: () -> Double = { CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .keyDown) }
     var sinceClick: () -> Double = { CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .leftMouseUp) }
@@ -67,7 +71,7 @@ final class PasteQueue: NSObject {
         guard isOpen else { return }
         settleTimer?.invalidate(); settleTimer = nil
         renewTimer?.invalidate(); renewTimer = nil
-        renewAfter = 0.3
+        renewAfter = 0.05
         if pb.changeCount == placedCount, let id = nextID ?? last.map({ ids[$0] }), let e = store.entry(id) {
             let r = Copia.write([(e, store.reps(id))], store: store, to: pb)
             monitor?.ownCount = r.count
@@ -131,7 +135,8 @@ final class PasteQueue: NSObject {
             // Served, but no paste: the pasteboard now holds these bytes itself and would not ask at the real ⌘V
             // (measured in the tests: a second read never reaches the provider). So the same item is promised anew
             // once this reader is done; a reader that reads every change (another clipboard tool) gets it later and
-            // later, 0.3 s doubling to 5 s (Clipbara's backoff), so the two never spin.
+            // later, 50 ms doubling to 5 s (Clipbara's backoff), so the two never spin. The first renewal is as quick as
+            // the settle: a ⌘V soon after such a read must find the item promised again.
             if renewTimer == nil {
                 let t = Timer(timeInterval: renewAfter, repeats: false) { [weak self] _ in self?.renewTimer = nil; self?.place() }
                 RunLoop.main.add(t, forMode: .common)
@@ -140,7 +145,7 @@ final class PasteQueue: NSObject {
             }
             return
         }
-        renewAfter = 0.3
+        renewAfter = 0.05
         if !pasting { pasting = true; pastes += 1 }
         settleTimer?.invalidate()
         let t = Timer(timeInterval: PasteQueue.settle, repeats: false) { [weak self] _ in self?.advance() }
@@ -156,6 +161,7 @@ final class PasteQueue: NSObject {
         guard !pending.isEmpty else { return }
         let i = pending.removeFirst()
         last = i
+        if traceEvents { FileHandle.standardError.write(Data(String(format: "advance %.3f %d\n", ProcessInfo.processInfo.systemUptime, i).utf8)) }
         onChange(.pasted(i))
         if nextID != nil { place() } else { onEmptied() }
     }
@@ -177,6 +183,9 @@ final class QueueItemData: NSObject, NSPasteboardItemDataProvider {
                 CGImageDestinationAddImageFromSource(dst, src, 0, nil)
                 if CGImageDestinationFinalize(dst) { item.setData(out as Data, forType: .tiff) }
             }
+        }
+        if traceEvents {
+            FileHandle.standardError.write(Data(String(format: "ask %.3f %@\n", ProcessInfo.processInfo.systemUptime, type.rawValue).utf8))
         }
         if Thread.isMainThread { queue?.asked() } else { DispatchQueue.main.async { self.queue?.asked() } }
     }

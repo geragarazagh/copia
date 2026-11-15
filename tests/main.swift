@@ -533,6 +533,22 @@ func queueTests() {
     q.add([ids[3], ids[0]])
     q.close()
     check(pb.string(forType: .string) == "last" && q.asks == 0, "closed early: the next item stays, as ordinary data (no ask)")
+    // Fast ⌘V in a row (his trial 2026-11-15 10:00: «быстро вставляю раз, два, три… она поломалась»): a press every
+    // 90 ms, each read right after its key; every press gets the next item, none twice, none skipped. (On real apps in
+    // `cs`: six ⌘V into Notes with rich text, 30-100 ms apart, pasted one to six in order.)
+    q.open()
+    let four = [ids[0], ids[1], ids[3], ids[0]]
+    q.add(four)
+    var got: [String] = []
+    for _ in 0..<4 {
+        _ = wait(0.09) { false }
+        key = 0.003
+        got.append(pb.string(forType: .string) ?? "-")
+    }
+    check(got == ["first line", "second line", "last", "first line"], "four presses 90 ms apart paste the four items in order: \(got)")
+    _ = wait(0.3) { false }
+    check(q.left == 0, "all four used (\(q.left) left)")
+    q.close()
     // Newest first (Settings, «Paste Order»): 4, 3, 2, 1; a copy made while it waits goes first.
     q.newestFirst = true
     q.open(); key = 100
