@@ -79,7 +79,7 @@ final class Deck: NSObject, NSDraggingSource {
     private func appear() {
         let mouse = NSEvent.mouseLocation
         screen = trialScreen() ?? NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
-        motion.stop(); endCapture(); flingTicker.stop(); fling = nil; scroll = nil
+        motion.stop(); endCapture(); flingTicker.stop(); fling = nil; scroll = nil; pendingLeave = nil
         for (_, c) in cards { c.removeFromSuperview() }
         cards = []
         rebuild(animated: false)
@@ -109,8 +109,10 @@ final class Deck: NSObject, NSDraggingSource {
 
     /// The cards for the queue now: the next items, front first, or one empty card. Cards already shown keep their
     /// view; a new one comes in at the back (it fades in over 0.2 s when `animated`).
-    private func rebuild(animated: Bool) {
-        let want: [Int] = queue.pending.isEmpty ? [-1] : Array(queue.pending.prefix(deckDepth + 1))
+    /// After the last paste (`emptyCard` false) no empty card comes in: the queue is closing, and the empty card
+    /// faded in for 0.35 s before the deck left (the site block's frame-by-frame check against 0.8, 2026-11-15).
+    private func rebuild(animated: Bool, emptyCard: Bool = true) {
+        let want: [Int] = queue.pending.isEmpty ? (emptyCard ? [-1] : []) : Array(queue.pending.prefix(deckDepth + 1))
         var next: [(Int, DeckCard)] = []
         for i in want {
             if let have = cards.first(where: { $0.0 == i }) { next.append(have); continue }
@@ -149,6 +151,7 @@ final class Deck: NSObject, NSDraggingSource {
     /// A paste: the front card slides off the nearest screen edge, accelerating, at full size (the thumbnail's way),
     /// in a window of its own so nothing clips it; the cards behind come forward.
     private func cardLeaves() {
+        if let p = pendingLeave { pendingLeave = nil; p() }   // a paste within the two frames: the last one's change first
         guard let (_, front) = cards.first, let s = screen else { rebuild(animated: false); return }
         let img = front.snapshot()
         let rect = view.convert(front.frame, to: nil), onScreen = window.convertToScreen(rect)
@@ -158,11 +161,22 @@ final class Deck: NSObject, NSDraggingSource {
         let iv = NSImageView(frame: NSRect(origin: .zero, size: onScreen.size)); iv.image = img; iv.imageScaling = .scaleNone
         fly.contentView = iv
         fly.orderFrontRegardless()
-        front.removeFromSuperview()
-        let old = Dictionary(uniqueKeysWithValues: cards.dropFirst().enumerated().map { ($0.1.1, cardFrame($0.0 + 1)) })
-        cards.removeFirst()
-        rebuild(animated: true)
-        layoutCards(from: old)
+        fly.displayIfNeeded()
+        // The front card stays two frames under its flying copy: a new window reaches the screen a frame after the
+        // deck's own change, and that frame showed the deck without its front card and nothing flying (the site
+        // block's 120 fps check against 0.8, 2026-11-15).
+        pendingLeave = { [weak self] in
+            guard let self, self.cards.first?.1 === front else { return }
+            front.removeFromSuperview()
+            let old = Dictionary(uniqueKeysWithValues: self.cards.dropFirst().enumerated().map { ($0.1.1, self.cardFrame($0.0 + 1)) })
+            self.cards.removeFirst()
+            self.rebuild(animated: true, emptyCard: false)
+            self.layoutCards(from: old)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0 / 60) { [weak self] in
+            guard let self, let p = self.pendingLeave else { return }
+            self.pendingLeave = nil; p()
+        }
         // Off the nearest edge: sideways for the side columns, up or down for the centre column's top and bottom.
         let p = placeFor(s), f = s.frame
         var d = NSPoint.zero
@@ -185,6 +199,7 @@ final class Deck: NSObject, NSDraggingSource {
         DispatchQueue.main.asyncAfter(deadline: .now() + dur + 0.1) { [weak self] in self?.flying.removeAll { !$0.running } }
     }
     private var flying: [Ticker] = []
+    private var pendingLeave: (() -> Void)?
 
     // MARK: flung off
 

@@ -1493,7 +1493,7 @@ func shelfOnScreen() {
         check(abs(box.maxX - (s.visibleFrame.maxX - deckGap)) < 0.5 && abs(box.minY - (s.visibleFrame.minY + deckGap)) < 0.5,
               "at the bottom right place: \(box) in \(s.visibleFrame)")
         check(d.view.badge.number == 3, "the badge counts three")
-        let t = pb.pasteboardItems?.first?.types.first { $0 != .own && $0 != .source }
+        let t = pb.pasteboardItems?.first?.types.first { ![.own, .source, .transient, .concealed].contains($0) }
         _ = t.flatMap { pb.data(forType: $0) }
         _ = wait(0.6) { false }
         check(q.left == 2 && d.view.badge.number == 2, "a paste: two left (\(q.left))")

@@ -7,7 +7,7 @@
 set -e
 cd "${0:A:h}"
 # The version changes per release, not per build (dev/apps.md, «Version numbers»).
-name=Copia version=0.8 min=13.0
+name=Copia version=0.1 min=13.0
 id=com.geragaraza.${(L)name} app=$name.app
 tmp=$(mktemp -d); trap 'rm -rf $tmp' EXIT
 rm -rf "$app"
