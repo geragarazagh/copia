@@ -41,7 +41,11 @@ func fold(_ s: String) -> ContiguousArray<UInt8> {
 enum Row {
     case head(String)
     case entry(Int)   // index into the shown entries
+    case kind(Pane)   // a kind offered while «/…» is typed in the search
 }
+
+/// The kinds «/» offers in the search: the big window's sidebar panes that are kinds.
+let kindPanes: [Pane] = [.text, .links, .images, .video, .audio, .files, .colors]
 
 // MARK: the controller: data, selection, keys and the window
 
@@ -67,6 +71,23 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     var pasteboard = NSPasteboard.general
     /// ⌘, : the big window at Settings (set by the app).
     var openBrowser: ((Pane) -> Void)?
+    /// The keys of the list (keys.swift), read from Settings when the panel opens and when they change.
+    var keys: Keys
+    /// The app in front when the panel opened: where Return pastes (the panel never takes the front itself).
+    private(set) var pasteTarget: NSRunningApplication?
+    /// Set by the app: ⌘V into that app once the panel is gone (paste.swift); the tests leave it.
+    var pasteInto: (NSRunningApplication?) -> Void = { _ in }
+    /// Set by the app: the empty space's Clear History….
+    var clearHistory: () -> Void = {}
+    /// The kind picked with «/», shown as a token before the search; the kinds offered while «/…» is typed, and the one
+    /// Return would pick.
+    private(set) var kindToken: Pane?
+    private(set) var suggestions: [Pane] = []
+    private(set) var suggestion = 0
+    var suggesting: Bool { !suggestions.isEmpty }
+    /// Quick Pick's numbers are on the rows (its modifier held), and the footer names the row's app and time.
+    private(set) var showsDigits = false
+    private var digitTimer: Timer?
     /// Off-screen renders draw the selection as in a focused window.
     var forceFocus = false
     /// Slows every animation by this factor, to step its frames in a test (COPIA_SLOW).
@@ -76,7 +97,12 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         self.store = store
         self.monitor = monitor
         view = PanelView(frame: NSRect(origin: .zero, size: panelSize), behindWindow: onScreen)
+        keys = store.keys
         super.init()
+        // Scrolled while the numbers show: they follow the rows in sight.
+        view.scroll.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: view.scroll.contentView,
+                                               queue: .main) { [weak self] _ in if self?.showsDigits == true { self?.refreshDigits() } }
         view.table.dataSource = self
         view.table.delegate = self
         view.table.owner = self
@@ -110,10 +136,27 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     /// entries of 1.8 KB, and still 55 ms as a literal NSString search on folded text (./test unit). So each entry is
     /// folded once into UTF-8 bytes and searched with memmem (UTF-8 never matches in the middle of a character).
     func filter() {
+        // «/» starts a kind filter (his answer 2026-11-15 ~15:35, «круто»): the kinds whose name begins with what follows
+        // are offered in place of the rows; with none («/usr/bin»), it is a search like any other.
+        if query.hasPrefix("/") {
+            let t = query.dropFirst().trimmingCharacters(in: .whitespaces).lowercased()
+            suggestions = kindPanes.filter { t.isEmpty || $0.title.lowercased().hasPrefix(t) }
+        } else { suggestions = [] }
+        suggestion = min(suggestion, max(0, suggestions.count - 1))
+        view.footerHidden = suggesting
+        if suggesting {
+            rows = suggestions.map { .kind($0) }
+            rowKeys = suggestions.map { "k:" + $0.rawValue }
+            view.table.reloadData()
+            updateFacts()
+            fitHeight(animated: isVisible || testVisible)
+            return
+        }
+        let pool = kindToken.map { k in all.filter { inPane($0, k) } } ?? all
         let q = Array(fold(query.trimmingCharacters(in: .whitespacesAndNewlines)))
-        if q.isEmpty { shown = all } else {
+        if q.isEmpty { shown = pool } else {
             // Split over the cores: one thread scans 9 MB in about 12 ms, twelve do it in one or two.
-            let hay = all.map(folded)
+            let hay = pool.map(folded)
             let n = hay.count, chunks = max(1, min(n, ProcessInfo.processInfo.activeProcessorCount * 2))
             var hit = [Bool](repeating: false, count: n)
             hit.withUnsafeMutableBufferPointer { out in
@@ -124,7 +167,7 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
                     }
                 }
             }
-            shown = all.indices.filter { hit[$0] }.map { all[$0] }
+            shown = pool.indices.filter { hit[$0] }.map { pool[$0] }
         }
         var r: [Row] = []
         var day: Date?
@@ -138,7 +181,7 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         let before = rowKeys
         rows = r
         rowKeys = r.map { row -> String in
-            switch row { case .head(let t): "h:" + t; case .entry(let i): "e:\(shown[i].id)" }
+            switch row { case .head(let t): "h:" + t; case .entry(let i): "e:\(shown[i].id)"; case .kind(let p): "k:" + p.rawValue }
         }
         // A deletion or its undo, on screen: the system's own list motion (Mail's: the rows fade while the ones below
         // slide up, or fade back in), the rows' only animation; every other change (a search, a copy arriving) lands
@@ -198,7 +241,8 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         if rows.isEmpty { list = 0 }
         var limit = panelSize.height
         if let s = screen { limit = min(limit, s.visibleFrame.height - 2 * screenGap) }
-        return min(limit, fieldH + 1 + list + 1 + factsH)
+        // The kinds of «/» stand alone, with no facts line under them (an empty strip there read as a missing word).
+        return min(limit, fieldH + 1 + list + (suggesting ? 0 : 1 + factsH))
     }
 
     /// The height drawn now, and where the top edge is on the screen (screen points; AppKit's y grows upwards).
@@ -271,7 +315,11 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     }
 
     func updateFacts() {
-        if let m = monitor, m.denied {
+        if showsDigits, let line = sourceLine() {
+            view.setFacts(nil, note: line)
+        } else if suggesting {
+            view.setFacts(nil, note: "")
+        } else if let m = monitor, m.denied {
             view.setFacts(nil, note: L("Reading the clipboard is off: Privacy & Security > Paste from Other Apps"))
         } else if !sel.isEmpty {
             view.setFacts(Facts(sel.order.compactMap(entry)), note: nil)
@@ -314,8 +362,87 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         let r = Copia.write(picked.map { ($0, store.reps($0.id)) }, store: store, to: pasteboard)
         monitor?.ownCount = r.count
         used(picked.map(\.id))
-        copied(picked.map(\.id))
+        copied(picked.map(\.id), false)
         hide()
+    }
+
+    /// Return (his answer 2026-11-15 ~15:35, as Spotlight's clipboard): the picks, or with nothing picked the first row
+    /// (Spotlight's top hit), on the clipboard in the one write, the panel goes, then ⌘V into the app that was in front
+    /// (paste.swift). Plain: their plain text alone. A paste puts exactly the picks in, so it goes past an open paste
+    /// queue, whose next item comes back on the clipboard after it (PasteQueue.resume).
+    func pasteSelection(plain: Bool) {
+        if sel.isEmpty, let first = shown.first { sel.click(first.id); selectionChanged() }
+        let picked = sel.order.compactMap(entry)
+        guard !picked.isEmpty else { return }
+        if plain {
+            let t = Copia.plainText(picked)
+            guard !t.isEmpty else { return }
+            let own = Copia.writePlain(t, to: pasteboard); monitor?.ownCount = own
+        } else {
+            let own = Copia.write(picked.map { ($0, store.reps($0.id)) }, store: store, to: pasteboard).count; monitor?.ownCount = own
+        }
+        used(picked.map(\.id))
+        let target = pasteTarget
+        hide { [weak self] in self?.pasteInto(target) }
+    }
+
+    /// Quick Pick: the Nth row in sight (the numbers shown while its modifier is held), pasted as Return pastes.
+    func quickPick(_ n: Int, plain: Bool) {
+        let ids = visibleEntryIDs()
+        guard n < ids.count else { return }
+        sel.clear(); sel.click(ids[n]); selectionChanged()
+        pasteSelection(plain: plain)
+    }
+
+    /// The first nine rows in sight, at least half shown, top down.
+    func visibleEntryIDs() -> [Int64] {
+        let vis = view.scroll.contentView.documentVisibleRect
+        let range = view.table.rows(in: vis)
+        var out: [Int64] = []
+        for r in range.location..<(range.location + range.length) where r < rows.count {
+            guard case .entry(let i) = rows[r] else { continue }
+            if view.table.rect(ofRow: r).intersection(vis).height >= rowH / 2 { out.append(shown[i].id) }
+            if out.count == 9 { break }
+        }
+        return out
+    }
+
+    /// The modifier keys changed: Quick Pick's alone, held for a moment (not the ⌥⌘ of the hot key being let go), shows
+    /// the numbers; anything else hides them.
+    func flagsChanged(_ f: NSEvent.ModifierFlags) {
+        digitTimer?.invalidate(); digitTimer = nil
+        guard f.intersection([.command, .option, .control, .shift]) == keys.pick.flags else { setDigits(false); return }
+        guard !showsDigits else { return }
+        let t = Timer(timeInterval: 0.2, repeats: false) { [weak self] _ in self?.setDigits(true) }
+        RunLoop.main.add(t, forMode: .common)
+        digitTimer = t
+    }
+
+    func setDigits(_ on: Bool) {
+        if !on { digitTimer?.invalidate(); digitTimer = nil }
+        guard on != showsDigits else { return }
+        showsDigits = on
+        refreshDigits()
+        updateFacts()
+    }
+
+    /// The numbers on the rows in sight, or none.
+    func refreshDigits() {
+        let ids = showsDigits ? visibleEntryIDs() : []
+        for r in 0..<rows.count {
+            guard let c = view.table.view(atColumn: 0, row: r, makeIfNecessary: false) as? EntryCell, case .entry(let i) = rows[r] else { continue }
+            c.shortcut = ids.firstIndex(of: shown[i].id).map { keys.pick.symbol + String($0 + 1) }
+            let (on, n) = rowLook(i)
+            c.update(selected: on, badge: n, focused: focused)
+        }
+    }
+
+    /// The footer while the numbers show: the app the picked row (or the first in sight) was copied in, and when.
+    func sourceLine() -> String? {
+        guard let id = sel.cursor ?? sel.order.last ?? visibleEntryIDs().first, let e = entry(id) else { return nil }
+        let when = dayText(Calendar.current.startOfDay(for: e.copied)) + ", " + timeText(e.copied)
+        let app = appName(e.app)
+        return app.isEmpty ? when : app + "  ·  " + when
     }
 
     /// Copied back from here: the entries move to the top (Store.touch). The panel shows the new order the next time
@@ -326,8 +453,9 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         afterChange()
     }
 
-    /// Set by the app: picks copied out of the panel join the paste queue when it is open, as any copy does.
-    var copied: ([Int64]) -> Void = { _ in }
+    /// Set by the app: picks copied out of the panel join the paste queue when it is open, as any copy does (true: as
+    /// plain text).
+    var copied: ([Int64], Bool) -> Void = { _, _ in }
 
     /// Set by the app: the big window reads the store again after a change made here.
     var afterChange: () -> Void = {}
@@ -392,6 +520,7 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     // MARK: mouse (from ListTable)
 
     func mouseDown(row: Int, flags: NSEvent.ModifierFlags, clicks: Int) {
+        if row >= 0, row < rows.count, case .kind(let p) = rows[row] { pickKind(p); return }
         guard row >= 0, row < rows.count, case .entry(let i) = rows[row] else { return }
         // A click in the list gives it the keys, the query staying (Finder's way): 0.6 picked the row in grey and left
         // the caret blinking in the search, with no way back to the list but ↓ (his recording 2026-11-15 09:27).
@@ -417,14 +546,72 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
 
     // MARK: keys
 
+    /// The settable keys (keys.swift) and the «/» kinds, before the field or the list sees the key. While the caret is in
+    /// the search, a key that edits text stays the field's (⌫, ⌘C, letters); Return, ⌘Return, ⌘Y and Quick Pick work
+    /// there too, as in Spotlight.
+    func bindingKey(_ e: NSEvent) -> Bool {
+        guard e.type == .keyDown else { return false }
+        if let k = NSApp.keyWindow, k !== window { return false }
+        if suggesting {
+            guard e.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty else { return false }
+            switch Int(e.keyCode) {
+            case 125: moveSuggestion(1)
+            case 126: moveSuggestion(-1)
+            case 36, 76, 48: pickKind(suggestions[suggestion])   // Return, Enter, Tab
+            default: return false
+            }
+            return true
+        }
+        guard let a = keys.action(e) else { return false }
+        if case .pick = a {} else if searching && isTextEditingKey(e) { return false }
+        switch a {
+        case .paste: pasteSelection(plain: false)
+        case .pastePlain: pasteSelection(plain: true)
+        case .copy: copySelection()
+        case .delete: deleteSelection()
+        case .preview:
+            guard preview.isOpen || !sel.isEmpty else { return false }
+            togglePreview()
+        case .pick(let n, let plain): quickPick(n, plain: plain)
+        }
+        return true
+    }
+
+    // MARK: the kind filter
+
+    /// Picks a kind: it shows as a token before the search, the «/…» typed goes, the caret stays for a query.
+    func pickKind(_ p: Pane) {
+        kindToken = p
+        suggestions = []; suggestion = 0
+        view.field.stringValue = ""
+        view.setToken(p)
+        if !searching { window?.makeFirstResponder(view.field) }
+        filter()
+        selectionChanged()
+    }
+
+    /// ⌫ on an empty search: the token goes.
+    func dropKind() {
+        kindToken = nil
+        view.setToken(nil)
+        filter()
+        selectionChanged()
+    }
+
+    func moveSuggestion(_ d: Int) {
+        guard suggesting else { return }
+        suggestion = (suggestion + d + suggestions.count) % suggestions.count
+        for r in 0..<rows.count { (view.table.view(atColumn: 0, row: r, makeIfNecessary: false) as? KindCell)?.highlighted = r == suggestion }
+    }
+
     /// ⌘ keys of the panel. The search field keeps the typing focus while the panel is open, so ⌫ alone edits the
     /// search and ⌘⌫ deletes the selection (Finder's Move to Trash); with nothing picked the keys act on the field.
     /// ⌘ keys of the panel, by where the keys are (his second review of 0.4, 2026-11-14 17:59: in the search field
     /// ⌘A did nothing; «separate the search field from the list properly»):
     /// - the search field (a caret in it): every key of a macOS text field, ⌘A selects the query, ⌘X ⌘C ⌘V, ⌘Z, ⌥⌫ and
     ///   ⌘⌫ edit it; the list is not touched;
-    /// - the list (no caret): ⌘A picks every row, ⌘C copies the picks, ⌘⌫ or ⌫ deletes them, ⌘Z brings them back,
-    ///   ⌘V starts a search with the pasted text.
+    /// - the list (no caret): ⌘A picks every row, ⌘Z brings deleted ones back, ⌘V starts a search with the pasted text,
+    ///   ⌘R shows files in Finder, ⌥⇧⌘C copies plain text; Copy, Delete and the rest are the settable keys (bindingKey).
     /// ⌘F goes to the field from anywhere; ↓, ↑ or Tab from the field give the keys to the list.
     func keyEquivalent(_ e: NSEvent) -> Bool {
         let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.capsLock, .numericPad, .function])
@@ -455,12 +642,12 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
             return true
         }
         switch (key, mods) {
-        case ("c", [.command]): copySelection()
         case ("a", [.command]): selectAll()
         case ("z", [.command]): if appUndo.canUndo { appUndo.undo() }
         case ("v", [.command]): focusSearch(); (window?.fieldEditor(false, for: view.field) as? NSTextView)?.paste(nil)
-        case (_, [.command]) where e.keyCode == 51: deleteSelection()   // ⌘⌫
-        default: return false
+        case ("r", [.command]): menuShowInFinder()   // Spotlight's and Finder's Show in Finder
+        case ("c", [.command, .option, .shift]): menuCopyPlain()   // the big window's Edit menu has the same
+        default: return false   // ⌘C, ⌘⌫ and the rest are the settable keys (bindingKey)
         }
         return true
     }
@@ -477,7 +664,8 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
             toList(); move(1, extending: true)
         case #selector(NSResponder.insertTab(_:)): toList(); if sel.isEmpty { move(1, extending: false) }
         case #selector(NSResponder.cancelOperation(_:)): escape()
-        case #selector(NSResponder.insertNewline(_:)): copyOnReturn()
+        case #selector(NSResponder.insertNewline(_:)): if suggesting { pickKind(suggestions[suggestion]) }   // else Return is a setting's
+        case #selector(NSResponder.deleteBackward(_:)) where query.isEmpty && kindToken != nil: dropKind()
         default: return false
         }
         return true
@@ -502,6 +690,12 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         hiding = false
         view.field.stringValue = ""
         sel.clear(); pending = nil
+        kindToken = nil; view.setToken(nil); suggestions = []
+        keys = store.keys
+        setDigits(false)
+        // Where Return pastes: the app in front now. The panel never activates Copia, so it stays the front app.
+        let front = NSWorkspace.shared.frontmostApplication
+        pasteTarget = front?.processIdentifier == getpid() ? nil : front
         reload()
         view.table.scrollRowToVisible(0)
         // On the screen with the pointer, centred across its visible frame (what the menu bar and the Dock leave), at
@@ -527,8 +721,9 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         selectionChanged()
     }
 
-    func hide() {
-        guard let w = window, w.isVisible, !hiding else { return }
+    func hide(then done: (() -> Void)? = nil) {
+        setDigits(false)
+        guard let w = window, w.isVisible, !hiding else { done?(); return }
         hiding = true
         let d = 0.085 * slow
         // Leaves with blur and fade and a slight growth, about 85 ms, as Spotlight does; an open preview fades with it.
@@ -541,11 +736,12 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
             pw?.animator().alphaValue = 0
         }, completionHandler: {
             self.preview.dismiss()
-            guard self.hiding else { return }   // ⌥⌘C again while it was leaving: it stays
+            guard self.hiding else { return }   // ⌥⌘C again while it was leaving: it stays (and pastes nothing)
             w.orderOut(nil)
             w.alphaValue = 1
             self.view.resetMotion()
             self.hiding = false
+            done?()
         })
     }
 
@@ -555,7 +751,7 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         DispatchQueue.main.async {
             guard NSApp.keyWindow !== self.preview.window || self.preview.window == nil else { self.redrawSelection(); return }
             self.redrawSelection()
-            if NSApp.keyWindow !== self.window { self.hide() }
+            if NSApp.keyWindow !== self.window { self.setDigits(false); self.hide() }
         }
     }
 
@@ -613,9 +809,10 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     /// picks are cleared together and the list has the keys, as on opening; then the panel goes.
     func escape() {
         if preview.isOpen { closePreview(); return }
-        if !query.isEmpty || searching || !sel.isEmpty {
-            let had = !query.isEmpty
+        if !query.isEmpty || searching || !sel.isEmpty || kindToken != nil {
+            let had = !query.isEmpty || kindToken != nil
             view.field.stringValue = ""
+            kindToken = nil; view.setToken(nil)
             sel.clear(); pending = nil
             window?.makeFirstResponder(view)
             if had { filter() }
@@ -625,23 +822,15 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         hide()
     }
 
-    /// Return copies, as a double click: the picks, or with nothing picked the first row (Spotlight's Return opens its
-    /// top hit).
-    func copyOnReturn() {
-        if sel.isEmpty, let first = shown.first { sel.click(first.id); selectionChanged() }
-        copySelection()
-    }
-
-    /// Keys while the list has them (no caret): the arrows move, ⇧ stretches, Return copies, Esc steps back. Letters do
-    /// nothing until ⌘F: opening is for choosing.
+    /// Keys while the list has them (no caret): the arrows move, ⇧ stretches, Esc steps back; Return, ⌫ and the rest
+    /// are the settable keys (bindingKey). Letters do nothing until ⌘F or Tab: opening is for choosing (his word
+    /// 2026-11-15 ~15:35: typing must not start a search).
     func listKey(_ e: NSEvent) -> Bool {
         let shift = e.modifierFlags.contains(.shift)
         switch Int(e.keyCode) {
         case 125: move(1, extending: shift)
         case 126: move(-1, extending: shift)
-        case 36, 76: copyOnReturn()
         case 53: escape()
-        case 51, 117: deleteSelection()   // ⌫ and ⌦ in the list delete the picks, as ⌘⌫ (the field has its own ⌫)
         case 48: focusSearch()   // Tab: back to the search field
         default: return false
         }
@@ -670,8 +859,7 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
 
     func tableView(_ t: NSTableView, heightOfRow row: Int) -> CGFloat {
-        if case .head = rows[row] { return 29 }
-        return rowH
+        switch rows[row] { case .head: 29; case .kind: kindRowH; case .entry: rowH }
     }
 
     func tableView(_ t: NSTableView, isGroupRow row: Int) -> Bool { false }
@@ -689,8 +877,14 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
             let c = t.makeView(withIdentifier: EntryCell.id, owner: nil) as? EntryCell ?? EntryCell()
             let e = shown[i]
             c.show(e, store: store)
+            c.shortcut = showsDigits ? visibleEntryIDs().firstIndex(of: e.id).map { keys.pick.symbol + String($0 + 1) } : nil
             let (on, n) = rowLook(i)
             c.update(selected: on, badge: n, focused: focused)
+            return c
+        case .kind(let p):
+            let c = t.makeView(withIdentifier: KindCell.id, owner: nil) as? KindCell ?? KindCell()
+            c.show(p)
+            c.highlighted = row == suggestion
             return c
         }
     }
@@ -734,7 +928,7 @@ final class Panel: NSPanel {
     override func constrainFrameRect(_ r: NSRect, to s: NSScreen?) -> NSRect { r }
 
     override func performKeyEquivalent(with e: NSEvent) -> Bool {
-        owner?.keyEquivalent(e) == true || super.performKeyEquivalent(with: e)
+        owner?.bindingKey(e) == true || owner?.keyEquivalent(e) == true || super.performKeyEquivalent(with: e)
     }
 
     override func cancelOperation(_ sender: Any?) { owner?.escape() }
@@ -744,6 +938,8 @@ final class Panel: NSPanel {
         if traceEvents, [.keyDown, .leftMouseDown].contains(e.type) {
             FileHandle.standardError.write(Data("panel \(e.type.rawValue) key=\(isKeyWindow) code=\(e.type == .keyDown ? Int(e.keyCode) : -1)\n".utf8))
         }
+        if e.type == .flagsChanged { owner?.flagsChanged(e.modifierFlags) }
+        if e.type == .keyDown, owner?.bindingKey(e) == true { return }
         if e.type == .keyDown, e.keyCode == 49, e.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
            let o = owner, o.spaceOpensPreview {
             o.togglePreview()
@@ -764,6 +960,7 @@ final class Margin: NSView {
 
 final class PanelView: NSView {
     let field = NSTextField()
+    let token = KindToken()
     let table = ListTable()
     let scroll = NSScrollView()
     private let facts = NSTextField(labelWithString: "")
@@ -827,6 +1024,8 @@ final class PanelView: NSView {
         let fh = field.intrinsicContentSize.height
         field.frame = NSRect(x: 50, y: (fieldH - fh) / 2, width: panelSize.width - 50 - 20, height: fh)
         content.addSubview(field)
+        token.isHidden = true
+        content.addSubview(token)
 
         content.addSubview(topLine)
 
@@ -868,6 +1067,9 @@ final class PanelView: NSView {
 
     /// The footer (a hairline and the facts line) rides the bottom edge; when the box is shorter than field +
     /// footer it stays under the field and the edge cuts it, so it is never drawn over the field.
+    /// No facts line (the kinds of «/»): the list reaches the bottom edge.
+    var footerHidden = false { didSet { footer.isHidden = footerHidden; layoutBox() } }
+
     private func layoutBox() {
         let w = bounds.width, h = bounds.height
         background.frame = bounds
@@ -877,7 +1079,7 @@ final class PanelView: NSView {
         footer.frame = NSRect(x: 0, y: fy, width: w, height: factsH + 1)
         bottomLine.frame = NSRect(x: 0, y: 0, width: w, height: 1)
         facts.frame = NSRect(x: 20, y: 1 + (factsH - 17) / 2, width: w - 40, height: 17)
-        scroll.frame = NSRect(x: 0, y: fieldH + 1, width: w, height: max(0, fy - fieldH - 1))
+        scroll.frame = NSRect(x: 0, y: fieldH + 1, width: w, height: max(0, (footerHidden ? h : fy) - fieldH - 1))
     }
 
     override func setFrameSize(_ s: NSSize) {
@@ -905,6 +1107,23 @@ final class PanelView: NSView {
 
     override func acceptsFirstMouse(for e: NSEvent?) -> Bool { true }
     override func mouseDown(with e: NSEvent) { owner?.drag(from: e) }
+    override func menu(for e: NSEvent) -> NSMenu? { owner?.emptyMenu() }
+
+    /// The kind token before the search text (Mail's and Finder's search tokens), or none.
+    func setToken(_ p: Pane?) {
+        let fh = field.frame.height, y = (fieldH - fh) / 2
+        guard let p else {
+            token.isHidden = true
+            field.frame = NSRect(x: 50, y: y, width: panelSize.width - 50 - 20, height: fh)
+            return
+        }
+        token.show(p)
+        let s = token.fittingSize
+        token.frame = NSRect(x: 50, y: ((fieldH - s.height) / 2).rounded(), width: s.width, height: s.height)
+        token.isHidden = false
+        let x = token.frame.maxX + 6
+        field.frame = NSRect(x: x, y: y, width: panelSize.width - x - 20, height: fh)
+    }
 
     // The list's keys when the search field has none (no caret on opening).
     override var acceptsFirstResponder: Bool { true }

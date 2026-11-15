@@ -1,5 +1,6 @@
 // The running app: the history store, the clipboard monitor, the panel and its key ⌥⌘C. Nothing in the Dock or the
-// menu bar; the app never posts keys and asks for no permission.
+// menu bar. Since 0.8 it sends one key, ⌘V, to the app the person pastes into (paste.swift), which takes Privacy &
+// Security > Accessibility; without it everything else works and Return copies.
 import AppKit
 import Carbon.HIToolbox
 
@@ -41,6 +42,7 @@ final class App: NSObject, NSApplicationDelegate {
     var browser: BrowserController!
     var queue: PasteQueue!
     var shelf: Shelf!
+    let paster = Paster()
     private var hotKey: EventHotKeyRef?
     private var queueHotKey: EventHotKeyRef?
     private var handlerInstalled = false
@@ -66,8 +68,24 @@ final class App: NSObject, NSApplicationDelegate {
         queue = PasteQueue(store: store)
         queue.monitor = monitor
         shelf = Shelf(queue: queue, store: store)
-        panel.copied = { [weak self] ids in self?.queue.add(ids) }
+        panel.copied = { [weak self] ids, plain in self?.queue.add(ids, plain: plain) }
         browser = BrowserController(store: store, monitor: monitor)
+        browser.copied = { [weak self] ids, plain in self?.queue.add(ids, plain: plain) }
+        paster.denied = { [weak self] in self?.explainPasting() }
+        paster.after = { [weak self] in self?.queue.resume() }
+        panel.pasteInto = { [weak self] app in self?.paster.paste(into: app) }
+        // The big window's Paste: into the app that was in front before Copia's window.
+        browser.pasteInto = { [weak self] in
+            guard let self, let id = self.lastOtherApp else { return }
+            self.paster.paste(into: NSRunningApplication.runningApplications(withBundleIdentifier: id).first)
+        }
+        browser.onKeysChange = { [weak self] in guard let self else { return }; self.panel.keys = self.store.keys }
+        browser.allowPasting = { [weak self] in self?.explainPasting(again: true) }
+        panel.clearHistory = { [weak self] in
+            self?.panel.hide()
+            self?.browser.show(.all)
+            self?.browser.clearHistory()
+        }
         browser.panelReload = { [weak self] in self?.panel.reload() }
         browser.onPlaceChange = { [weak self] p, s in self?.panel.setPlace(p, on: s) }
         panel.afterChange = { [weak self] in if self?.browser.isVisible == true { self?.browser.reload() } }
@@ -150,6 +168,37 @@ final class App: NSObject, NSApplicationDelegate {
     }
 
     @objc func checkForUpdates() { updater?.check() }
+
+    /// Pasting needs Accessibility (paste.swift). The first time Return finds it off, Copia says once what it is for and
+    /// lets macOS ask; until it is on, Return copies and the person presses ⌘V. From Settings («Allow…») it asks again,
+    /// or opens the Accessibility list when macOS has already asked once.
+    func explainPasting(again: Bool = false) {
+        let asked = store.setting("asked.paste") == "1"
+        if asked && !again { return }
+        if asked {
+            _ = CGRequestPostEventAccess()   // keeps Copia in the list when it was taken out
+            Paster.openAccessibilitySettings()
+            return
+        }
+        store.setSetting("asked.paste", "1")
+        NSApp.activate(ignoringOtherApps: true)
+        let a = NSAlert()
+        a.messageText = L("Allow Copia to paste for you?")
+        a.informativeText = L("Return pastes what you picked into the app you were in: Copia puts it on the clipboard and presses ⌘V there. macOS lets an app press keys only when it is turned on in System Settings > Privacy & Security > Accessibility.\n\nUntil then, Return copies: press ⌘V to paste. Copia presses only ⌘V, only when you paste, and never reads what you type.")
+        a.addButton(withTitle: L("Continue"))
+        a.addButton(withTitle: L("Not Now"))
+        let r = a.runModal()
+        // Back to the app the person was in, unless Copia's own window is open.
+        if !browser.isVisible { NSApp.hide(nil) }
+        if r == .alertFirstButtonReturn, !CGRequestPostEventAccess() {
+            // macOS shows its own question («Open System Settings» / «Deny») the first time it is asked; when it has
+            // been answered before it shows nothing, so the list itself opens.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                let asking = NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == "com.apple.accessibility.universalAccessAuthWarn" }
+                if !asking && !CGPreflightPostEventAccess() { Paster.openAccessibilitySettings() }
+            }
+        }
+    }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 

@@ -197,7 +197,8 @@ final class Items {
     static func key(_ e: NSEvent, owner: BrowserController?) -> Bool {
         let mods = e.modifierFlags.intersection([.command, .option, .control, .shift])
         if e.keyCode == 49 && mods.isEmpty { owner?.quickLook(nil); return true }
-        return false
+        if e.keyCode == 15 && mods == .command { owner?.showInFinderFromMenu(nil); return true }   // ⌘R
+        return owner?.itemsKey(e) == true
     }
 }
 
@@ -704,6 +705,8 @@ final class ListView: NSObject, ItemsView, NSTableViewDataSource, NSTableViewDel
 
 final class KeyTable: NSTableView {
     weak var owner: BrowserController?
+    /// Letters jump nowhere (his no to type-to-search, 2026-11-15): AppKit's type select would move the selection.
+    override var allowsTypeSelect: Bool { get { false } set {} }
     override func mouseDown(with e: NSEvent) {
         let start = convert(e.locationInWindow, from: nil)
         let r = row(at: start)

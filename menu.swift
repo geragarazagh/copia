@@ -1,56 +1,108 @@
-// The right-click menu of a row, his list (2026-11-14, kept from the mockups): Copy, Copy as Plain Text, Share…,
-// Open With, Delete ⌘⌫. macOS's own words in ru and uk (AppKit MenuCommands.loctable; «Поделиться…» from Photos),
-// no icons (AppKit on macOS 27 draws none in such menus, Spotlight's clipboard menu has none). A right click on a row
-// outside the selection picks that row first, as in Finder; the menu then acts on the whole selection.
+// The right-click menu of an item, one for the panel and the big window (his answer 2026-11-15 ~15:35: «one order for
+// every kind», kind-only items added in their place, never a menu reordered by kind: «нелогично»):
+//   Paste, Paste as Plain Text | Copy, Copy as Plain Text | Share…, Open With, [Open in Browser: links],
+//   [Show in Finder ⌘R: files] | Delete
+// The keys beside the items are the person's own (Settings). macOS's own words, no icons (AppKit on macOS 27 draws none
+// in such menus, Spotlight's clipboard menu has none). A right click on a row outside the selection picks that row
+// first, as in Finder; the menu then acts on the whole selection. On empty space: Open Copia Window, Clear History…,
+// Settings… (the panel; the big window keeps Finder's view menu there).
 import AppKit
 import UniformTypeIdentifiers
 
+/// The verbs of the item menu, as the window's own selectors.
+struct ItemVerbs {
+    var paste, pastePlain, copy, copyPlain, share, openInBrowser, showInFinder, delete: Selector
+}
+
+/// The item menu for these picks, in the one fixed order.
+func makeItemMenu(_ picked: [Entry], target: AnyObject, verbs v: ItemVerbs, keys: Keys, openWith: NSMenu) -> NSMenu {
+    let m = NSMenu()
+    m.autoenablesItems = false
+    func add(_ title: String, _ action: Selector, _ key: HotKey? = nil) -> NSMenuItem {
+        let it = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        if let key { dressMenuKey(it, key) }
+        it.target = target
+        m.addItem(it)
+        return it
+    }
+    let hasPlain = !Copia.plainText(picked).isEmpty
+    _ = add(L("Paste"), v.paste, keys.paste)
+    add(L("Paste as Plain Text"), v.pastePlain, keys.plain == .fn ? nil : HotKey(code: keys.paste.code, mods: keys.paste.mods | keys.plain.carbon))
+        .isEnabled = hasPlain
+    m.addItem(.separator())
+    _ = add(L("Copy"), v.copy, keys.copy)
+    add(L("Copy as Plain Text"), v.copyPlain, HotKey(code: 8, mods: 2048 | 512 | 256)).isEnabled = hasPlain   // ⌥⇧⌘C
+    m.addItem(.separator())
+    _ = add(L("Share…"), v.share)
+    let open = NSMenuItem(title: L("Open With"), action: nil, keyEquivalent: "")
+    open.submenu = openWith
+    open.isEnabled = !openWith.items.isEmpty
+    m.addItem(open)
+    if !picked.isEmpty && picked.allSatisfy({ $0.kind == .link }) { _ = add(L("Open in Browser"), v.openInBrowser) }
+    if !picked.isEmpty && picked.allSatisfy({ $0.kind == .files }) { _ = add(L("Show in Finder"), v.showInFinder, HotKey(code: 15, mods: 256)) }   // ⌘R
+    m.addItem(.separator())
+    _ = add(L("Delete"), v.delete, keys.delete)
+    return m
+}
+
+/// Each link's page in the default browser.
+func openInBrowser(_ picked: [Entry]) {
+    for e in picked where e.kind == .link {
+        if let u = URL(string: e.address), u.scheme != nil { NSWorkspace.shared.open(u) }
+    }
+}
+
+/// The copied files, selected in Finder (those still there).
+func showInFinder(_ picked: [Entry], store: Store) {
+    let urls = picked.filter { $0.kind == .files }.flatMap { entryFiles($0, store: store) }
+        .filter { FileManager.default.fileExists(atPath: $0.path) }
+    if !urls.isEmpty { NSWorkspace.shared.activateFileViewerSelecting(urls) }
+}
+
 extension PanelController: NSMenuDelegate {
+    static let verbs = ItemVerbs(paste: #selector(menuPaste), pastePlain: #selector(menuPastePlain), copy: #selector(menuCopy),
+                                 copyPlain: #selector(menuCopyPlain), share: #selector(menuShare), openInBrowser: #selector(menuOpenInBrowser),
+                                 showInFinder: #selector(menuShowInFinder), delete: #selector(menuDelete))
+
     func contextMenu(row: Int) -> NSMenu? {
-        guard row >= 0, row < rows.count, case .entry(let i) = rows[row] else { return nil }
+        guard row >= 0, row < rows.count, case .entry(let i) = rows[row] else { return emptyMenu() }
         let id = shown[i].id
         if !sel.contains(id) { sel.click(id); selectionChanged() }
         let picked = sel.order.compactMap(entry)
-        let m = NSMenu()
-        m.autoenablesItems = false
-        func add(_ title: String, _ action: Selector, key: String = "", mods: NSEvent.ModifierFlags = [.command]) -> NSMenuItem {
-            let it = NSMenuItem(title: title, action: action, keyEquivalent: key)
-            it.keyEquivalentModifierMask = mods
-            it.target = self
-            m.addItem(it)
-            return it
-        }
-        _ = add(L("Copy"), #selector(menuCopy), key: "c")
-        add(L("Copy as Plain Text"), #selector(menuCopyPlain)).isEnabled = !plainText(picked).isEmpty
-        _ = add(L("Share…"), #selector(menuShare))
-        let open = NSMenuItem(title: L("Open With"), action: nil, keyEquivalent: "")
-        open.submenu = openWithMenu(picked)
-        open.isEnabled = open.submenu?.items.isEmpty == false
-        m.addItem(open)
-        m.addItem(.separator())
-        _ = add(L("Delete"), #selector(menuDelete), key: "\u{8}")
         menuRow = row
+        return makeItemMenu(picked, target: self, verbs: Self.verbs, keys: keys, openWith: openWithMenu(picked))
+    }
+
+    /// Empty space in the panel.
+    func emptyMenu() -> NSMenu {
+        let m = NSMenu()
+        for (t, a) in [(L("Open Copia Window"), #selector(menuOpenWindow)), (L("Clear History…"), #selector(menuClearHistory)),
+                       (L("Settings…"), #selector(menuSettings))] {
+            let it = m.addItem(withTitle: t, action: a, keyEquivalent: a == #selector(menuSettings) ? "," : "")
+            it.target = self
+        }
         return m
     }
 
+    @objc func menuOpenWindow() { openBrowser?(.all) }
+    @objc func menuClearHistory() { clearHistory() }
+    @objc func menuSettings() { openBrowser?(.settings) }
+    @objc func menuPaste() { pasteSelection(plain: false) }
+    @objc func menuPastePlain() { pasteSelection(plain: true) }
     @objc func menuCopy() { copySelection() }
+    @objc func menuOpenInBrowser() { openInBrowser(sel.order.compactMap(entry)); hide() }
+    @objc func menuShowInFinder() { showInFinder(sel.order.compactMap(entry), store: store); hide() }
 
-    /// Every picked text as plain text, joined by a new line (files and images give their names).
+    /// Every picked text as plain text, joined by a new line (files give their names, images nothing); it joins the paste
+    /// queue as plain text, as any copy joins it.
     @objc func menuCopyPlain() {
-        let t = plainText(sel.order.compactMap(entry))
+        let picked = sel.order
+        let t = Copia.plainText(picked.compactMap(entry))
         guard !t.isEmpty else { return }
-        pasteboard.clearContents()
-        let it = NSPasteboardItem()
-        it.setString(t, forType: .string)
-        it.setString("1", forType: .own)
-        pasteboard.writeObjects([it])
-        monitor?.ownCount = pasteboard.changeCount
-        used(sel.order)
+        let own = Copia.writePlain(t, to: pasteboard); monitor?.ownCount = own
+        used(picked)
+        copied(picked, true)
         hide()
-    }
-
-    func plainText(_ es: [Entry]) -> String {
-        es.map { $0.kind == .image ? "" : $0.text }.filter { !$0.isEmpty }.joined(separator: "\n")
     }
 
     /// The system's share sheet from the row: texts as text, images and files as files.

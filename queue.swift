@@ -20,6 +20,8 @@ final class PasteQueue: NSObject {
     private(set) var ids: [Int64] = []
     private(set) var pending: [Int] = []
     private(set) var last: Int?
+    /// Places in `ids` copied as plain text (Copy as Plain Text in either window): pasted as their plain text alone.
+    private(set) var plainAt: Set<Int> = []
     private(set) var isOpen = false
     var newestFirst = false
     var left: Int { pending.count }
@@ -91,7 +93,7 @@ final class PasteQueue: NSObject {
     func open() {
         guard !isOpen else { return }
         isOpen = true
-        ids = []; pending = []; last = nil; asks = 0; pastes = 0
+        ids = []; pending = []; last = nil; plainAt = []; asks = 0; pastes = 0
         onChange(.opened)
     }
 
@@ -102,33 +104,49 @@ final class PasteQueue: NSObject {
         settleTimer?.invalidate(); settleTimer = nil
         renewTimer?.invalidate(); renewTimer = nil
         renewAfter = 0.05
-        if pb.changeCount == placedCount, let id = nextID ?? last.map({ ids[$0] }), let e = store.entry(id) {
-            let r = Copia.write([(e, store.reps(id))], store: store, to: pb)
-            monitor?.ownCount = r.count
+        if pb.changeCount == placedCount, let i = nextIndex ?? last, let e = store.entry(ids[i]) {
+            if plainAt.contains(i) { let own = Copia.writePlain(Copia.plainText([e]), to: pb); monitor?.ownCount = own }
+            else { let own = Copia.write([(e, store.reps(ids[i]))], store: store, to: pb).count; monitor?.ownCount = own }
         }
         isOpen = false
-        ids = []; pending = []; last = nil; providers = []; pasting = false
+        ids = []; pending = []; last = nil; plainAt = []; providers = []; pasting = false
         onChange(.closed)
     }
 
-    /// A copy seen while the queue is open (the monitor's, or picks copied out of Copia's own panel), in order.
-    func add(_ new: [Int64]) {
+    /// A copy seen while the queue is open (the monitor's, or picks copied out of either of Copia's windows), in order;
+    /// `plain`: copied as plain text, and pasted so.
+    func add(_ new: [Int64], plain: Bool = false) {
         guard isOpen, !new.isEmpty else { return }
         let was = ids.count
         ids += new
         let added = Array(was..<ids.count)
+        if plain { plainAt.formUnion(added) }
         pending = newestFirst ? added.reversed() + pending : pending + added
         onChange(.added(was))
         // The copy itself is on the clipboard now; the queue's next item goes back on top of it.
         place()
     }
 
+    /// A paste made by Copia itself (Return in the panel, Paste in a menu) put exactly the picks on the clipboard, past
+    /// the queue, which never saw it; once it is over the queue's next item goes back on the clipboard.
+    func resume() {
+        guard isOpen, nextID != nil, pb.changeCount != placedCount else { return }
+        place()
+    }
+
     /// Puts the next item on the clipboard as promised data, in one write as any of Copia's copies.
     private func place() {
         renewTimer?.invalidate(); renewTimer = nil
-        guard let id = nextID, let e = store.entry(id) else { return }
+        guard let i = nextIndex, let e = store.entry(ids[i]) else { return }
         var tiffs: [TIFFProvider] = []
-        let items = Copia.items([(e, store.reps(id))], store: store, providers: &tiffs)
+        let items: [NSPasteboardItem]
+        if plainAt.contains(i) {
+            let it = NSPasteboardItem()
+            it.setString(Copia.plainText([e]), forType: .string)
+            items = [it]
+        } else {
+            items = Copia.items([(e, store.reps(ids[i]))], store: store, providers: &tiffs)
+        }
         var out: [NSPasteboardItem] = []
         var keep: [QueueItemData] = []
         for it in items {

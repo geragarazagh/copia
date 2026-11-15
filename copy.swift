@@ -1,7 +1,7 @@
 // Copying a selection back: the whole selection in ONE pasteboard write, and the person presses ⌘V where they want
-// (Pasteboard report, A4; proved by the prototype 2026-11-14 in Telegram, Finder, Notes, Messages). The app never posts
-// ⌘V, so it needs no Accessibility and no «post events» permission, and no app can read a half-changed clipboard
-// between several pastes (the race that lost his images in ClipBook: rounds of clear, one image, ⌘V).
+// (Pasteboard report, A4; proved by the prototype 2026-11-14 in Telegram, Finder, Notes, Messages), so no app can read a
+// half-changed clipboard between several pastes (the race that lost his images in ClipBook: rounds of clear, one image,
+// ⌘V). Copia's own paste (Return, since 0.8: paste.swift) makes the same one write first, then sends one ⌘V.
 import AppKit
 
 enum Copia {
@@ -71,6 +71,24 @@ enum Copia {
             it.setString(Bundle.main.bundleIdentifier ?? "com.geragaraza.copia", forType: .source)
         }
         return out
+    }
+
+    /// The picks as plain text: every text, link, colour and file name, joined by a new line; pictures give nothing.
+    /// Copy as Plain Text and Paste as Plain Text in both windows, and the paste queue's plain items.
+    static func plainText(_ es: [Entry]) -> String {
+        es.map { $0.kind == .image ? "" : $0.text }.filter { !$0.isEmpty }.joined(separator: "\n")
+    }
+
+    /// Plain text in one write, marked as Copia's own; returns the pasteboard's count after it (the monitor skips it).
+    @discardableResult
+    static func writePlain(_ t: String, to pb: NSPasteboard = .general) -> Int {
+        pb.clearContents()
+        let it = NSPasteboardItem()
+        it.setString(t, forType: .string)
+        it.setString("1", forType: .own)
+        it.setString(Bundle.main.bundleIdentifier ?? "com.geragaraza.copia", forType: .source)
+        pb.writeObjects([it])
+        return pb.changeCount
     }
 
     static func isImage(_ reps: [Rep]) -> Bool {

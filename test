@@ -4,22 +4,23 @@
 # ./test general writes to the general pasteboard, his content saved before and put back after: run it outside
 # Claude's command sandbox. The binary stays at $TMPDIR/copia-tests.
 # ./test cs runs the same (renders too), plus the real-window checks (the Quick Look crash of 0.4, focus, keys, places:
-# copia-tests screen), inside the agents' own login session (skill mac, control.md «cs»), where the
+# copia-tests screen; Return pasting into TextEdit for real: copia-tests pastelive), inside the agents' own login session (skill mac, control.md «cs»), where the
 # test windows never reach his screen: binary, fixtures and pictures go to /Users/Shared/claude/clip first.
 set -e
 cd "${0:A:h}"
 t=$TMPDIR/copia-tests
 swiftc -O -target arm64-apple-macos13.0 -o $t tests/main.swift app.swift capture.swift model.swift store.swift copy.swift \
-  selection.swift panel.swift rows.swift text.swift motion.swift place.swift preview.swift menu.swift browser.swift views.swift settings.swift link.swift drag.swift queue.swift shelf.swift deck.swift
+  selection.swift panel.swift rows.swift text.swift motion.swift place.swift preview.swift menu.swift browser.swift views.swift settings.swift link.swift drag.swift queue.swift shelf.swift deck.swift keys.swift paste.swift
 if [ "$1" = general ]; then $t general; exit; fi
 if [ "$1" = cs ]; then
   T=/Users/Shared/claude/clip; mkdir -p $T; chmod 777 $T
   [ -d Copia.app ] || ./build >/dev/null
   rm -rf $T/tests $T/res $T/Copia.app; cp -R tests Copia.app $T/; cp -R ../mock/res $T/res; cp $t $T/copia-tests; chmod -R a+rX $T/tests $T/Copia.app $T/res $T/copia-tests
   cs run /bin/zsh -c "cd $T && export COPIA_RES=$T/res/ && ./copia-tests unit && ./copia-tests capture && ./copia-tests copy && ./copia-tests screen &&
+    : > $T/paste.txt && open -a TextEdit $T/paste.txt && sleep 3 && ./copia-tests pastelive; r=\$?; pkill -x TextEdit; [ \$r = 0 ] &&
     sandbox-exec -p '(version 1)(allow default)(deny network*)' ./copia-tests links && rm -rf r && mkdir r &&
     ./copia-tests render $T/Copia.app light r/light.png && ./copia-tests render $T/Copia.app dark r/dark.png motion &&
-    ./copia-tests render $T/Copia.app dark r/preview.png preview && chmod -R a+rX r"
+    ./copia-tests render $T/Copia.app dark r/preview.png preview && ./copia-tests render $T/Copia.app light r/keys.png keys && chmod -R a+rX r"
   echo "renders: $T/r"; echo Done; exit
 fi
 $t unit
@@ -38,5 +39,7 @@ $t render $PWD/Copia.app light $out/links.png links
 $t render $PWD/Copia.app light $out/height.png height
 $t render $PWD/Copia.app dark $out/preview.png preview
 $t render $PWD/Copia.app light $out/image.png image
+$t render $PWD/Copia.app light $out/keys.png keys
+$t render $PWD/Copia.app dark $out/keysdark.png keys
 echo "renders: $out"
 echo Done

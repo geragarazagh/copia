@@ -412,9 +412,13 @@ func unit() {
     Ticker.manual = false
 
     let menu = pv.contextMenu(row: 1)!
-    check(menu.items.map(\.title) == ["Copy", "Copy as Plain Text", "Share…", "Open With", "", "Delete"], "menu: \(menu.items.map(\.title))")
-    check(menu.items[5].keyEquivalent == "\u{8}" && menu.items[5].keyEquivalentModifierMask == .command, "Delete shows ⌘⌫")
-    check(menu.items[3].submenu?.items.contains { $0.title == "TextEdit" } == true, "Open With lists TextEdit for a text")
+    check(menu.items.map(\.title) == ["Paste", "Paste as Plain Text", "", "Copy", "Copy as Plain Text", "", "Share…", "Open With", "", "Delete"],
+          "menu, one order: \(menu.items.map(\.title))")
+    check(menu.items[9].keyEquivalent == "\u{8}" && menu.items[9].keyEquivalentModifierMask == .command, "Delete shows ⌘⌫")
+    check(menu.items[0].keyEquivalent == "\r" && menu.items[0].keyEquivalentModifierMask == [] && menu.items[1].keyEquivalentModifierMask == .command,
+          "Paste shows ↩, Paste as Plain Text ⌘↩")
+    check(menu.items[7].submenu?.items.contains { $0.title == "TextEdit" } == true, "Open With lists TextEdit for a text")
+    check(pv.contextMenu(row: -1)?.items.map(\.title) == ["Open Copia Window", "Clear History…", "Settings…"], "empty space: window, clear, settings")
     let mpb = NSPasteboard(name: .init("com.geragaraza.copia.test.menu.\(getpid())"))
     pv.pasteboard = mpb
     pv.menuCopyPlain()
@@ -460,6 +464,7 @@ func unit() {
 
     for d in [dir, fdir, ddir, sdir, pdir] { try? FileManager.default.removeItem(at: d) }
     browserTests()
+    keysTests()
     orderTests()
     dragTests()
     queueTests()
@@ -594,8 +599,186 @@ func queueTests() {
     let top = pb.string(forType: .string)
     check(q.pasted == 1 && top == "last" && q.pending == [2, 0], "a new copy goes first; the older one waits (\(q.pasted), \(top ?? "-"), \(q.pending))")
     q.close()
+    // Copy as Plain Text joins as plain text (0.8: it never reached the queue before); the next item is its text alone.
+    q.newestFirst = false
+    q.open(); key = 100
+    q.add([ids[0]], plain: true)
+    check(pb.pasteboardItems?.first?.types.contains(.string) == true && pb.pasteboardItems?.first?.types.contains(.rtf) == false
+          && pb.string(forType: .string) == "first line", "a plain copy in the queue is its plain text alone")
+    // Copia's own paste writes the picks past the queue; resume() puts the queue's next item back.
+    settle()
+    pb.clearContents(); pb.setString("picked", forType: .string)
+    q.resume()
+    check(pb.string(forType: .string) == "first line", "after Copia's own paste the queue's next item is back")
+    q.close()
     pb.releaseGlobally()
     try? FileManager.default.removeItem(at: dir)
+}
+
+/// The settable keys (keys.swift), the clash check, and the panel's paste, Quick Pick and «/» kinds without a screen.
+func keysTests() {
+    func ev(_ code: Int, _ mods: NSEvent.ModifierFlags = [], _ ch: String = "") -> NSEvent {
+        NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: mods, timestamp: 0, windowNumber: 0, context: nil,
+                         characters: ch, charactersIgnoringModifiers: ch, isARepeat: false, keyCode: UInt16(code))!
+    }
+    var k = Keys.standard
+    check(k.action(ev(36, [], "\r")) == .paste && k.action(ev(76, [], "\u{3}")) == .paste, "Return and Enter paste")
+    check(k.action(ev(36, .command, "\r")) == .pastePlain, "⌘Return pastes plain text")
+    check(k.action(ev(36, .shift, "\r")) == nil, "⇧Return is nothing by default")
+    check(k.action(ev(8, .command, "c")) == .copy && k.action(ev(51, .command)) == .delete && k.action(ev(51)) == .delete
+          && k.action(ev(117)) == .delete && k.action(ev(16, .command, "y")) == .preview, "⌘C copies, ⌘⌫ ⌫ ⌦ delete, ⌘Y previews")
+    check(k.action(ev(18, .command, "1")) == .pick(0, plain: false) && k.action(ev(25, .command, "9")) == .pick(8, plain: false)
+          && k.action(ev(18, .option, "1")) == nil, "⌘1 … ⌘9 pick, ⌥1 does not")
+    check(k.action(ev(19, [.command, .option], "2")) == nil, "⌥⌘2 is not a pick")
+    k.plain = .shift
+    check(k.action(ev(36, .shift, "\r")) == .pastePlain && k.action(ev(36, .command, "\r")) == nil && k.action(ev(19, [.command, .shift])) == .pick(1, plain: true),
+          "plain modifier ⇧: ⇧Return plain, ⇧⌘2 picks the second as plain text")
+    k.plain = .fn
+    check(k.action(ev(76, [.function])) == .pastePlain && k.action(ev(36, [.function])) == .pastePlain && k.action(ev(36)) == .paste,
+          "plain modifier Fn: Fn-Return (Enter) plain, Return pastes")
+    k = .standard; k.pick = .option
+    check(k.action(ev(20, .option, "£")) == .pick(2, plain: false) && k.action(ev(20, .command, "3")) == nil, "Quick Pick with ⌥")
+    k = .standard; k.paste = HotKey(code: 35, mods: 256); k.copy = .returnKey   // ⌘P pastes, Return copies
+    check(k.action(ev(35, .command, "p")) == .paste && k.action(ev(36, [], "\r")) == .copy && k.action(ev(35, [.command, .command])) == .paste,
+          "keys swapped: ⌘P pastes, Return copies")
+    check(isTextEditingKey(ev(0, [], "a")) && isTextEditingKey(ev(51)) && isTextEditingKey(ev(8, .command, "c")) && isTextEditingKey(ev(49, [], " "))
+          && !isTextEditingKey(ev(36, [], "\r")) && !isTextEditingKey(ev(18, .command, "1")) && !isTextEditingKey(ev(16, .command, "y")),
+          "text editing keys stay the search field's; Return, ⌘1, ⌘Y do not")
+    // Stored, read back.
+    let dir = tmpDir("keys")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let (st, _) = seeded(dir, mockSpecs())
+    check(st.keys == .standard, "no setting: the defaults")
+    var nk = Keys.standard; nk.plain = .option; nk.pick = .control; nk.delete = HotKey(code: 2, mods: 256)
+    st.keys = nk
+    check(st.keys == nk, "the keys stored and read back")
+    st.keys = .standard
+    // Clashes.
+    check(keyClashes(show: .standard, queue: .queue, keys: .standard).isEmpty, "the defaults clash with nothing: \(keyClashes(show: .standard, queue: .queue, keys: .standard))")
+    var ck = Keys.standard; ck.copy = .standard
+    let c1 = keyClashes(show: .standard, queue: .queue, keys: ck)
+    check(c1.count == 1 && c1[0].contains("Show History") && c1[0].contains("Copy"), "Copy on ⌥⌘C clashes with Show History: \(c1)")
+    check(keyClashes(show: .standard, queue: .standard, keys: .standard).first?.contains("Paste Queue") == true, "the two hot keys the same: said")
+    ck = .standard; ck.preview = HotKey(code: 0, mods: 256)
+    check(keyClashes(show: .standard, queue: .queue, keys: ck).first?.contains("Select All") == true, "Preview on ⌘A clashes with Select All")
+    ck = .standard; ck.copy = HotKey(code: 18, mods: 256)
+    check(keyClashes(show: .standard, queue: .queue, keys: ck).first?.contains("Quick Pick 1") == true, "Copy on ⌘1 clashes with Quick Pick")
+    ck = .standard; ck.paste = HotKey(code: 36, mods: 256)
+    check(keyClashes(show: .standard, queue: .queue, keys: ck).contains { $0.contains("needs a modifier") }, "⌘Return with a ⌘ plain modifier: said")
+
+    // The panel, its real window never shown: Return pastes (writes, then hands over to the paster), ⌘Return plain,
+    // Quick Pick, the digits, «/» kinds.
+    let pc = PanelController(store: st, monitor: nil, onScreen: true)
+    let pb = NSPasteboard(name: .init("com.geragaraza.copia.test.paste.\(getpid())"))
+    pc.pasteboard = pb
+    var pastes = 0
+    pc.pasteInto = { _ in pastes += 1 }
+    var copies: [([Int64], Bool)] = []
+    pc.copied = { copies.append(($0, $1)) }
+    func press(_ e: NSEvent) {
+        let w = pc.window!
+        let r = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: e.modifierFlags, timestamp: 0, windowNumber: w.windowNumber,
+                                 context: nil, characters: e.characters ?? "", charactersIgnoringModifiers: e.charactersIgnoringModifiers ?? "",
+                                 isARepeat: false, keyCode: e.keyCode)!
+        if r.modifierFlags.contains(.command) && w.performKeyEquivalent(with: r) { return }
+        w.sendEvent(r)
+    }
+    pc.view.setFrameSize(NSSize(width: panelSize.width, height: panelSize.height))
+    pc.window!.makeFirstResponder(pc.view)
+    let first = pc.shown[0]
+    press(ev(36, [], "\r"))
+    check(pastes == 1 && pb.pasteboardItems?.count ?? 0 >= 1 && pc.sel.order == [first.id] && copies.isEmpty,
+          "Return with nothing picked: the first row written and pasted, past the queue (\(pastes), \(copies.count))")
+    let rich = pc.shown.firstIndex { $0.kind == .text }!
+    pc.sel.clear(); pc.sel.click(pc.shown[rich].id); pc.selectionChanged()
+    press(ev(36, .command, "\r"))
+    check(pastes == 2 && pb.pasteboardItems?.count == 1 && pb.pasteboardItems?.first?.types.contains(.rtf) == false
+          && pb.string(forType: .string) == Copia.plainText([pc.shown[rich]]), "⌘Return: the plain text alone, pasted")
+    pc.sel.clear(); pc.selectionChanged()
+    press(ev(8, .command, "c"))
+    check(pastes == 2 && copies.isEmpty, "⌘C with nothing picked: nothing")
+    let vis = pc.visibleEntryIDs()
+    check(vis.count == min(9, pc.shown.count) || vis.count >= 7, "rows in sight: \(vis.count)")
+    press(ev(19, .command, "2"))
+    check(pastes == 3 && pc.sel.order == [vis[1]], "⌘2 pastes the second row in sight")
+    pc.sel.clear(); pc.sel.click(vis[2]); pc.selectionChanged()
+    press(ev(8, .command, "c"))
+    check(copies.count == 1 && copies[0].0 == [vis[2]] && !copies[0].1, "⌘C copies and joins the queue")
+    pc.sel.clear(); pc.sel.click(pc.shown[rich].id); pc.selectionChanged()
+    pc.menuCopyPlain()
+    check(copies.count == 2 && copies[1].1, "Copy as Plain Text joins the queue as plain text")
+    // The digits: the modifier alone held for a moment shows them; with the footer naming app and time.
+    pc.flagsChanged(.command)
+    check(!pc.showsDigits, "not at once (the hot key's ⌘ being let go)")
+    _ = wait(0.4) { pc.showsDigits }
+    check(pc.showsDigits && pc.sourceLine() != nil, "⌘ held: the numbers, and the footer's app and time (\(pc.sourceLine() ?? "-"))")
+    pc.flagsChanged([.command, .shift])
+    check(!pc.showsDigits, "another modifier added: gone")
+    // «/»: the kinds as suggestions, Return picks one as a token, ⌫ on the empty field takes it away.
+    pc.focusSearch()
+    pc.view.field.stringValue = "/"; pc.filter()
+    check(pc.suggesting && pc.rows.count == 7, "«/» offers the seven kinds (\(pc.rows.count))")
+    pc.view.field.stringValue = "/im"; pc.filter()
+    check(pc.suggestions == [.images], "«/im»: Images")
+    press(ev(36, [], "\r"))
+    check(pc.kindToken == .images && pc.query.isEmpty && !pc.suggesting && pc.shown.allSatisfy { inPane($0, .images) } && !pc.shown.isEmpty
+          && pastes == 3 && !pc.view.token.isHidden, "Return picks Images: a token, only images, nothing pasted (\(pc.shown.count))")
+    _ = pc.control(pc.view.field, textView: NSTextView(), doCommandBy: #selector(NSResponder.deleteBackward(_:)))
+    check(pc.kindToken == nil && pc.view.token.isHidden && pc.shown.count == st.entries().count, "⌫ on the empty search: the token goes")
+    pc.view.field.stringValue = "/"; pc.filter()
+    press(ev(125, [], "\u{F701}")); press(ev(125, [], "\u{F701}"))
+    check(pc.suggestion == 2, "↓ ↓ moves among the kinds")
+    pc.mouseDown(row: 4, flags: [], clicks: 1)
+    check(pc.kindToken == .audio, "a click picks a kind (the fifth, Audio)")
+    pc.view.field.stringValue = "/usr/bin"; pc.filter()
+    check(!pc.suggesting, "«/usr/bin» matches no kind: a plain search")
+    pc.escape()
+    check(pc.kindToken == nil && pc.query.isEmpty, "Esc clears the token with the search")
+    // Kind-only items in their fixed slot, nothing else moves.
+    func rowOf(_ k: Kind) -> Int { pc.rows.firstIndex { if case .entry(let i) = $0 { return pc.shown[i].kind == k }; return false }! }
+    pc.sel.clear()
+    let lm = pc.contextMenu(row: rowOf(.link))!.items.map(\.title)
+    check(lm == ["Paste", "Paste as Plain Text", "", "Copy", "Copy as Plain Text", "", "Share…", "Open With", "Open in Browser", "", "Delete"], "a link: Open in Browser after Open With \(lm)")
+    pc.sel.clear()
+    let fm = pc.contextMenu(row: rowOf(.files))!
+    check(fm.items.map(\.title) == ["Paste", "Paste as Plain Text", "", "Copy", "Copy as Plain Text", "", "Share…", "Open With", "Show in Finder", "", "Delete"]
+          && fm.items[8].keyEquivalent == "r" && fm.items[8].keyEquivalentModifierMask == .command, "files: Show in Finder ⌘R in its slot \(fm.items.map(\.title))")
+    pc.sel.clear()
+    let im = pc.contextMenu(row: rowOf(.image))!
+    check(im.items.count == 10 && !im.items[1].isEnabled && !im.items[4].isEnabled && im.items[0].isEnabled, "a picture: the same order, the plain-text items off")
+    // The paster: without the permission, the explanation, no keys.
+    let p = Paster()
+    var denied = 0, posted = 0
+    p.allowed = { false }; p.denied = { denied += 1 }; p.post = { _ in posted += 1 }
+    p.paste(into: NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first)
+    check(denied == 1 && posted == 0, "no Accessibility: explained, nothing sent")
+    p.allowed = { true }
+    p.paste(into: .current); p.paste(into: nil)
+    _ = wait(0.2) { false }
+    check(posted == 0, "never into Copia itself or nowhere")
+    pb.releaseGlobally()
+
+    // The big window: Return copies (window stays), Esc clears the search then the selection, ⌫ deletes, copies join.
+    let b = BrowserController(store: st, monitor: nil)
+    b.pasteboard = NSPasteboard(name: .init("com.geragaraza.copia.test.bk\(getpid())"))
+    var bc: [([Int64], Bool)] = []
+    b.copied = { bc.append(($0, $1)) }
+    b.open(pane: .text); b.open(pane: .all)
+    let ids = b.shown.filter { $0.kind == .text }.map(\.id)
+    b.selectionChanged(to: [ids[0]])
+    check(b.itemsKey(ev(36, [], "\r")) && bc.count == 1 && bc[0].0 == [ids[0]] && !bc[0].1, "big window: Return copies, and the copy joins the queue")
+    check(b.itemsKey(ev(36, .command, "\r")) && bc.count == 2 && bc[1].1, "⌘Return copies plain text, joining as plain text")
+    b.query = "zzz-none"; b.reload()
+    check(b.itemsKey(ev(53, [], "\u{1b}")) && b.query.isEmpty, "Esc clears the search first")
+    b.selectionChanged(to: [ids[1]])
+    check(b.itemsKey(ev(53, [], "\u{1b}")) && b.order.isEmpty, "then the selection")
+    check(!b.itemsKey(ev(0, [], "a")), "a letter does nothing")
+    b.selectionChanged(to: [ids[1]])
+    let before = st.entries().count
+    check(b.itemsKey(ev(51)) && st.entries().count == before - 1, "⌫ deletes as ⌘⌫")
+    let menu = b.itemMenu()
+    check(menu.items.map(\.title).prefix(5) == ["Paste", "Paste as Plain Text", "", "Copy", "Copy as Plain Text"], "the big window's menu is the panel's: \(menu.items.map(\.title))")
+    b.pasteboard.releaseGlobally()
 }
 
 /// Dragging out: one file per picked thing, in pick order (0.4's recording: two items became one merged text file).
@@ -1079,6 +1262,19 @@ func render(app: String, theme: String, out: String, mode: String) {
             Ticker.advance(1.0 / 60)
         }
     }
+    if mode == "keys" {
+        // 0.8: Quick Pick's numbers with ⌘ held (and the footer's app and time); «/» offering the kinds, the second one
+        // marked; the Images token picked with nothing typed after it.
+        pc.setDigits(true)
+        shoot(out.replacingOccurrences(of: ".png", with: "-digits.png"))
+        pc.setDigits(false)
+        pc.view.field.stringValue = "/"; pc.filter(); pc.moveSuggestion(1)
+        _ = wait(0.3) { false }
+        shoot(out.replacingOccurrences(of: ".png", with: "-kinds.png"))
+        pc.pickKind(.images)
+        _ = wait(0.3) { false }
+        shoot(out.replacingOccurrences(of: ".png", with: "-token.png"))
+    }
     if motion {
         // The leaving animation, 20 × slower, a frame every 1/60 s of real time: blur and growth on the glass (the
         // window's own fade is replaced by the view's here, since the picture behind shares the window).
@@ -1413,6 +1609,63 @@ func panelOnScreen() {
     pb.releaseGlobally()
 }
 
+/// Return and Quick Pick paste for real (paste.swift): run in the agents' own session (cs) with TextEdit open on an empty
+/// plain-text file in front (./test cs opens it). The panel opens over it, Return pastes the first row into TextEdit, ⌘2
+/// the second row in sight, ⌘Return a rich text as plain text; TextEdit's text is read back through Accessibility. The
+/// keys go to TextEdit's process only (CGEventPostToPid), never into the session's stream.
+func pasteOnScreen() {
+    guard let te = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.TextEdit").first else {
+        check(false, "TextEdit is running in this session"); return
+    }
+    check(CGPreflightPostEventAccess(), "this process may send keys (cs: Claude Code's Accessibility)")
+    te.activate(options: [])
+    _ = wait(3) { NSWorkspace.shared.frontmostApplication == te }
+    check(NSWorkspace.shared.frontmostApplication == te, "TextEdit in front")
+    let dir = tmpDir("pastelive")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let now = Date()
+    let (st, _) = seeded(dir, [(textSnap("gamma third"), now.addingTimeInterval(-30)), (textSnap("beta second"), now.addingTimeInterval(-20)),
+                               (textSnap("alpha first"), now.addingTimeInterval(-10))])
+    let pc = PanelController(store: st, monitor: nil)
+    let paster = Paster()
+    pc.pasteInto = { paster.paste(into: $0) }
+    func text() -> String {
+        let a = AXUIElementCreateApplication(te.processIdentifier)
+        var f: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(a, kAXFocusedUIElementAttribute as CFString, &f) == .success, let f else { return "<no focus>" }
+        var v: CFTypeRef?
+        AXUIElementCopyAttributeValue(f as! AXUIElement, kAXValueAttribute as CFString, &v)
+        return v as? String ?? "<no value>"
+    }
+    func press(_ ch: String, _ code: UInt16, _ mods: NSEvent.ModifierFlags = []) {
+        let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: mods, timestamp: 0, windowNumber: pc.window!.windowNumber,
+                                 context: nil, characters: ch, charactersIgnoringModifiers: ch, isARepeat: false, keyCode: code)!
+        if mods.contains(.command), pc.window!.performKeyEquivalent(with: e) { return }
+        pc.window!.sendEvent(e)
+    }
+    let before = text()
+    pc.show(); _ = wait(0.3) { false }
+    check(pc.pasteTarget == te && pc.window!.isKeyWindow, "the panel has the keys, TextEdit is where Return pastes (\(pc.pasteTarget?.bundleIdentifier ?? "-"))")
+    press("\r", 36)
+    _ = wait(2) { text() != before }
+    let t1 = text()
+    check(t1.hasSuffix("alpha first") && paster.lastPid == te.processIdentifier && !pc.isVisible, "Return pasted the first row into TextEdit: «\(t1)»")
+    check(NSWorkspace.shared.frontmostApplication == te, "TextEdit still in front")
+    pc.show(); _ = wait(0.3) { false }
+    press("2", 19, .command)
+    _ = wait(2) { text() != t1 }
+    let t2 = text()
+    // The row pasted moved to the top (Store.touch), so the second in sight is «beta second» again.
+    check(t2.hasSuffix("alpha firstbeta second"), "⌘2 pasted the second row in sight: «\(t2)»")
+    pc.show(); _ = wait(0.3) { false }
+    press("\u{F701}", 125); press("\u{F701}", 125); press("\u{F701}", 125)
+    press("\r", 36, .command)
+    _ = wait(2) { text() != t2 }
+    let t3 = text()
+    check(t3.hasSuffix("gamma third") && NSPasteboard.general.pasteboardItems?.first?.types.contains(.rtf) == false,
+          "⌘Return pasted the third row as plain text: «\(t3)»")
+}
+
 // MARK: main
 
 _ = NSApplication.shared
@@ -1441,6 +1694,7 @@ case "write" where argv.count >= 3:   // another app copying: TEXT on the genera
     if argv.count > 3 { it.setString("<b>\(argv[2])</b>", forType: .html) }
     pb.writeObjects([it]); exit(0)
 case "screen": qlCrash(); panelOnScreen(); shelfOnScreen(); finish("screen")
+case "pastelive": pasteOnScreen(); finish("pastelive")
 case "readtiff" where argv.count == 3:   // copy's helper: another process asking for the TIFF
     let d = NSPasteboard(name: .init(argv[2])).pasteboardItems?.first?.data(forType: .tiff)
     print(d.flatMap { NSBitmapImageRep(data: $0) }?.pixelsWide ?? 0); exit(0)

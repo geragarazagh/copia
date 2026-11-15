@@ -14,6 +14,8 @@ final class EntryCell: NSTableCellView {
     private let appIcon = NSImageView()
     private let number = NSTextField(labelWithString: "")
     private var selected = false, focused = true
+    /// Quick Pick's key for this row («⌘3») while its modifier is held: shown where the order number or the app's icon is.
+    var shortcut: String?
 
     override var isFlipped: Bool { true }
 
@@ -69,9 +71,9 @@ final class EntryCell: NSTableCellView {
         // The paste order of a set of two or more: a plain number at the row's end, in the row's own text colour, where
         // the copying app's icon sits (his pick 2026-11-14 ~19:05 of four variants; 0.4's accent circles are gone:
         // «Apple has nothing like them»). Typography, as Mail's and Reminders' counts.
-        number.stringValue = n.map(String.init) ?? ""
-        number.textColor = strong ? .alternateSelectedControlTextColor : .labelColor
-        number.isHidden = n == nil
+        number.stringValue = shortcut ?? n.map(String.init) ?? ""
+        number.textColor = strong ? .alternateSelectedControlTextColor : shortcut != nil ? .secondaryLabelColor : .labelColor
+        number.isHidden = shortcut == nil && n == nil
         appIcon.isHidden = !number.isHidden
         needsDisplay = true
     }
@@ -88,6 +90,86 @@ final class EntryCell: NSTableCellView {
     var titleFrame: NSRect { title.frame }
     var titleText: String { title.stringValue }
     var numberShown: String? { number.isHidden ? nil : number.stringValue }
+}
+
+/// The height of a kind offered by «/».
+let kindRowH: CGFloat = 40
+
+/// A kind offered while «/…» is typed: the big window's sidebar symbol and name; the one Return picks in the accent
+/// colour, as Spotlight marks the suggestion its Return takes.
+final class KindCell: NSTableCellView {
+    static let id = NSUserInterfaceItemIdentifier("kind")
+    private let icon = NSImageView()
+    private let title = NSTextField(labelWithString: "")
+    var highlighted = false { didSet { tint(); needsDisplay = true } }
+    override var isFlipped: Bool { true }
+
+    init() {
+        super.init(frame: NSRect(x: 0, y: 0, width: panelSize.width, height: kindRowH))
+        identifier = Self.id
+        icon.frame = NSRect(x: listInset + 16, y: (kindRowH - 20) / 2, width: 24, height: 20)
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        title.font = .systemFont(ofSize: 14, weight: .medium)
+        title.frame = NSRect(x: listInset + 52, y: (kindRowH - 18) / 2, width: panelSize.width - 2 * listInset - 70, height: 18)
+        addSubview(icon); addSubview(title)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    func show(_ p: Pane) {
+        icon.image = NSImage(systemSymbolName: p.symbol, accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 15, weight: .medium))
+        title.stringValue = p.title
+        tint()
+    }
+
+    private func tint() {
+        title.textColor = highlighted ? .alternateSelectedControlTextColor : .labelColor
+        icon.contentTintColor = highlighted ? .alternateSelectedControlTextColor : .secondaryLabelColor
+    }
+
+    override func draw(_ r: NSRect) {
+        guard highlighted else { return }
+        NSColor.selectedContentBackgroundColor.setFill()
+        NSBezierPath(roundedRect: bounds.insetBy(dx: listInset, dy: 0), xRadius: 10, yRadius: 10).fill()
+    }
+
+    var titleText: String { title.stringValue }
+}
+
+/// The kind picked with «/», before the search text: a soft capsule with the kind's symbol and name, as the search
+/// tokens of Mail and Finder.
+final class KindToken: NSView {
+    private let icon = NSImageView()
+    private let title = NSTextField(labelWithString: "")
+    override var isFlipped: Bool { true }
+
+    init() {
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = 7
+        layer?.cornerCurve = .continuous
+        title.font = .systemFont(ofSize: 15, weight: .medium)
+        title.textColor = .labelColor
+        icon.contentTintColor = .secondaryLabelColor
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        addSubview(icon); addSubview(title)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    private(set) var pane: Pane?
+    func show(_ p: Pane) {
+        pane = p
+        icon.image = NSImage(systemSymbolName: p.symbol, accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 13, weight: .medium))
+        title.stringValue = p.title
+        title.sizeToFit()
+        let h: CGFloat = 28
+        icon.frame = NSRect(x: 8, y: (h - 16) / 2, width: 18, height: 16)
+        title.frame = NSRect(x: 30, y: ((h - title.frame.height) / 2).rounded(), width: title.frame.width, height: title.frame.height)
+        setFrameSize(NSSize(width: title.frame.maxX + 9, height: h))
+    }
+    override var fittingSize: NSSize { frame.size }
+    override var wantsUpdateLayer: Bool { true }
+    override func updateLayer() { layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.1).cgColor }
 }
 
 /// «7:34 · 3456 × 2234 · 6,2 МБ», «7:31 · 1 162 символа», «7:27 · https://…», «7:30 · RGB 10 · 132 · 255».

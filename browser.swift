@@ -121,6 +121,14 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
     weak var monitor: Monitor?
     /// Re-registers the hot key after it is changed in Settings.
     var onHotKeyChange: (() -> Void)?
+    /// The list keys changed in Settings (the panel reads them again).
+    var onKeysChange: () -> Void = {}
+    /// Settings' «Allow…» beside Paste into Apps.
+    var allowPasting: () -> Void = {}
+    /// Set by the app: copies made here join the paste queue as any copy does (true: as plain text).
+    var copied: ([Int64], Bool) -> Void = { _, _ in }
+    /// Set by the app: ⌘V into the app that was in front before this window (Paste in the item menu).
+    var pasteInto: () -> Void = {}
     /// Settings' «Position on Screen» changed (the panel takes it).
     var onPlaceChange: ((Place, NSScreen) -> Void)?
     private(set) var window: BrowserWindow?
@@ -396,7 +404,62 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
         guard pane != .deleted, !order.isEmpty else { return }
         let r = Copia.write(picked.map { ($0, store.reps($0.id)) }, store: store, to: pasteboard)
         monitor?.ownCount = r.count
+        copied(order, false)
         used()
+    }
+
+    /// The item menu's Paste: the picks in one write, then ⌘V into the app that was in front before this window (it
+    /// comes forward; this window stays). As the panel's, it goes past an open paste queue.
+    @objc func paste(_ sender: Any?) {
+        guard pane != .deleted, !order.isEmpty else { return }
+        let own = Copia.write(picked.map { ($0, store.reps($0.id)) }, store: store, to: pasteboard).count; monitor?.ownCount = own
+        used()
+        pasteInto()
+    }
+
+    @objc func pastePlain(_ sender: Any?) {
+        let t = Copia.plainText(picked)
+        guard pane != .deleted, !t.isEmpty else { return }
+        let own = Copia.writePlain(t, to: pasteboard); monitor?.ownCount = own
+        used()
+        pasteInto()
+    }
+
+    @objc func showInFinderFromMenu(_ sender: Any?) { showInFinder(picked, store: store) }
+    @objc func openInBrowserFromMenu(_ sender: Any?) { openInBrowser(picked) }
+
+    /// The list keys of Settings in this window (keys.swift): the same verbs on the selection, but nothing is pasted and
+    /// the window stays, so Paste's key (Return) copies and Paste as Plain Text's copies plain text (his answer
+    /// 2026-11-15 ~15:35: «Return copies, the same logic as the panel»). ⌫ deletes as ⌘⌫; Esc clears the search, then the
+    /// selection. Letters do nothing (his no to type-to-search).
+    func itemsKey(_ e: NSEvent) -> Bool {
+        if e.keyCode == 53 && e.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty {
+            if !query.isEmpty {
+                query = ""
+                searchItem?.searchField.stringValue = ""
+                reload()
+            } else if !order.isEmpty {
+                order = []
+                content.items?.select([])
+                selectionChanged(to: [])
+            }
+            return true
+        }
+        guard pane != .settings, let a = store.keys.action(e) else { return false }
+        switch a {
+        case .paste, .copy:
+            guard pane != .deleted, !order.isEmpty else { return false }
+            copy(nil)
+            flashStatus(String(format: L("Copied: %@"), counted(order.count, "object|objects")))
+        case .pastePlain:
+            guard pane != .deleted, !order.isEmpty else { return false }
+            copyAsPlainText(nil)
+            flashStatus(String(format: L("Copied as plain text: %@"), counted(order.count, "object|objects")))
+        case .delete: moveToRecentlyDeleted(nil)
+        case .preview: quickLook(nil)
+        case .pick: return false   // ⌘1, ⌘2, ⌘4 are Finder's views here
+        }
+        return true
     }
 
     /// Copied back: the picked entries move to the top (Store.touch), here and in the panel; the selection stays and
@@ -409,14 +472,10 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
     }
 
     @objc func copyAsPlainText(_ sender: Any?) {
-        let t = picked.map { $0.kind == .image ? "" : $0.text }.filter { !$0.isEmpty }.joined(separator: "\n")
+        let t = Copia.plainText(picked)
         guard !t.isEmpty else { return }
-        pasteboard.clearContents()
-        let it = NSPasteboardItem()
-        it.setString(t, forType: .string)
-        it.setString("1", forType: .own)
-        pasteboard.writeObjects([it])
-        monitor?.ownCount = pasteboard.changeCount
+        let own = Copia.writePlain(t, to: pasteboard); monitor?.ownCount = own
+        copied(order, true)
         used()
     }
 
@@ -590,8 +649,8 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
 
     // MARK: menus
 
-    /// The right-click on an item: the panel's menu (Copy, Copy as Plain Text, Share…, Open With, Delete); in Recently
-    /// Deleted, Finder's Trash menu (Put Back, Delete Immediately…).
+    /// The right-click on an item: the panel's menu, in its one order (menu.swift); in Recently Deleted, Finder's Trash
+    /// menu (Put Back, Delete Immediately…).
     func itemMenu() -> NSMenu {
         let m = NSMenu()
         func add(_ t: String, _ a: Selector, _ key: String = "", _ mods: NSEvent.ModifierFlags = .command) {
@@ -604,17 +663,13 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
             add(L("Delete Immediately…"), #selector(deleteImmediately(_:)), "\u{8}")
             return m
         }
-        add(L("Copy"), #selector(copy(_:)), "c")
-        add(L("Copy as Plain Text"), #selector(copyAsPlainText(_:)))
-        add(L("Share…"), #selector(shareFromMenu(_:)))
-        let open = NSMenuItem(title: L("Open With"), action: nil, keyEquivalent: "")
-        open.submenu = openWithMenu()
-        m.addItem(open)
-        add(L("Quick Look"), #selector(quickLook(_:)), " ", [])
-        m.addItem(.separator())
-        add(L("Delete"), #selector(moveToRecentlyDeleted(_:)), "\u{8}")
-        return m
+        return makeItemMenu(picked, target: self, verbs: Self.verbs, keys: store.keys, openWith: openWithMenu())
     }
+
+    static let verbs = ItemVerbs(paste: #selector(paste(_:)), pastePlain: #selector(pastePlain(_:)), copy: #selector(copy(_:)),
+                                 copyPlain: #selector(copyAsPlainText(_:)), share: #selector(shareFromMenu(_:)),
+                                 openInBrowser: #selector(openInBrowserFromMenu(_:)), showInFinder: #selector(showInFinderFromMenu(_:)),
+                                 delete: #selector(moveToRecentlyDeleted(_:)))
 
     /// The right-click on empty space, as Finder's: the views, Sort By, Show View Options.
     func emptyMenu() -> NSMenu {

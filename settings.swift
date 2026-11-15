@@ -1,5 +1,6 @@
 // Settings (the big window's last sidebar row; his approved round-3 Г, without the Recently Deleted row): the hot key,
-// open at login, how long the history is kept, and clearing it. Grouped rows as System Settings draws them. Then Finder's
+// open at login, the paste queue, the keys of the lists (every key settable, his word 2026-11-15: keys.swift), with a
+// warning when two are the same, how long the history is kept, and clearing it. Grouped rows as System Settings draws them. Then Finder's
 // View Options panel (⌘J) and the app's menus (hidden while the app has no menu bar of its own, yet they carry the keys).
 import AppKit
 import Carbon.HIToolbox
@@ -47,7 +48,9 @@ struct HotKey: Equatable {
 
 /// The key's printed name on the current keyboard layout (the letter the person sees on the key).
 func keyName(_ code: UInt16) -> String {
-    let special: [UInt16: String] = [49: "Space", 36: "↩", 48: "⇥", 51: "⌫", 53: "⎋", 123: "←", 124: "→", 125: "↓", 126: "↑"]
+    let special: [UInt16: String] = [49: "Space", 36: "↩", 76: "⌤", 48: "⇥", 51: "⌫", 117: "⌦", 53: "⎋", 123: "←", 124: "→", 125: "↓",
+                                     126: "↑", 115: "↖", 119: "↘", 116: "⇞", 121: "⇟", 122: "F1", 120: "F2", 99: "F3", 118: "F4",
+                                     96: "F5", 97: "F6", 98: "F7", 100: "F8", 101: "F9", 109: "F10", 103: "F11", 111: "F12"]
     if let s = special[code] { return code == 49 ? L("Space") : s }
     guard let src = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue(),
           let p = TISGetInputSourceProperty(src, kTISPropertyUnicodeKeyLayoutData) else { return "?" }
@@ -100,7 +103,19 @@ final class SettingsView: FlippedLayout {
     private let keep = NSPopUpButton()
     private let position = NSPopUpButton()
     private let clear = NSButton()
+    private let pasteRec = ShortcutButton(local: true)
+    private let plainPop = NSPopUpButton()
+    private let copyRec = ShortcutButton(local: true)
+    private let deleteRec = ShortcutButton(local: true)
+    private let previewRec = ShortcutButton(local: true)
+    private let pickPop = NSPopUpButton()
+    private let access = AccessRow()
+    /// What clashes, under the keys (nothing when none).
+    private let warning = NSTextField(wrappingLabelWithString: "")
+    private let scroll = NSScrollView()
     private var groups: [GroupBox] = []
+    /// Where the warning goes: after this group.
+    private var warnAfter = 2
 
     init(owner: BrowserController) {
         self.owner = owner
@@ -111,12 +126,25 @@ final class SettingsView: FlippedLayout {
             guard let o = self?.owner else { return }
             o.store.hotKey = k
             o.onHotKeyChange?()
+            self?.refresh()
         }
         queueRecorder.onChange = { [weak self] k in
             guard let o = self?.owner else { return }
             o.store.queueKey = k
             o.onHotKeyChange?()
+            self?.refresh()
         }
+        let keyRecorders: [(ShortcutButton, WritableKeyPath<Keys, HotKey>)] = [(pasteRec, \.paste), (copyRec, \.copy),
+                                                                              (deleteRec, \.delete), (previewRec, \.preview)]
+        for (r, path) in keyRecorders {
+            r.onChange = { [weak self] k in self?.setKeys { $0[keyPath: path] = k } }
+        }
+        plainPop.target = self; plainPop.action = #selector(plainChanged); plainPop.isBordered = false
+        pickPop.target = self; pickPop.action = #selector(pickChanged); pickPop.isBordered = false
+        access.allow = { [weak self] in self?.owner?.allowPasting() }
+        warning.font = .systemFont(ofSize: 12)
+        warning.textColor = .systemRed
+        warning.isHidden = true
         order.addItems(withTitles: [L("Oldest First"), L("Newest First")])
         order.target = self; order.action = #selector(orderChanged)
         order.isBordered = false
@@ -141,11 +169,23 @@ final class SettingsView: FlippedLayout {
         groups = [
             GroupBox(rows: [(L("Show History"), recorder), (L("Position on Screen"), position), (L("Open at Login"), login)]),
             GroupBox(rows: [(L("Paste Queue"), queueRecorder), (L("Paste Order"), order)]),
+            GroupBox(rows: [(L("Paste"), pasteRec), (L("Paste as Plain Text"), plainPop), (L("Copy"), copyRec), (L("Delete"), deleteRec),
+                            (L("Preview"), previewRec), (L("Quick Pick"), pickPop), (L("Paste into Apps"), access)]),
             GroupBox(rows: [(L("Keep History"), keep)]),
             GroupBox(rows: [("", clear)], centered: true),
         ]
         for g in groups { column.addSubview(g) }
+        column.addSubview(warning)
+        // The groups scroll when the window is shorter than they are (the keys made them taller than its smallest size).
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.documentView = column
+        addSubview(scroll)
         onLayout = { [weak self] in self?.place() }
+        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.refresh()   // back from System Settings: Paste into Apps may be on now
+        }
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -159,6 +199,43 @@ final class SettingsView: FlippedLayout {
         keep.selectItem(withTitle: o.store.keep.title)
         let p = NSScreen.main.flatMap { o.store.setting("place." + screenKey($0)).flatMap(Place.init) } ?? .standard
         position.selectItem(withTitle: p.title)
+        let k = o.store.keys
+        pasteRec.key = k.paste; copyRec.key = k.copy; deleteRec.key = k.delete; previewRec.key = k.preview
+        plainPop.removeAllItems()
+        for m in PlainMod.allCases {
+            plainPop.addItem(withTitle: m == .fn ? "fn " + k.paste.text : HotKey(code: k.paste.code, mods: k.paste.mods | m.carbon).text)
+            plainPop.lastItem?.representedObject = m.rawValue
+        }
+        plainPop.selectItem(at: PlainMod.allCases.firstIndex(of: k.plain) ?? 1)
+        pickPop.removeAllItems()
+        for m in PickMod.allCases {
+            pickPop.addItem(withTitle: "\(m.symbol)1 – \(m.symbol)9"); pickPop.lastItem?.representedObject = m.rawValue
+        }
+        pickPop.selectItem(at: PickMod.allCases.firstIndex(of: k.pick) ?? 0)
+        access.allowed = Paster().allowed()
+        let clashes = keyClashes(show: o.store.hotKey, queue: o.store.queueKey, keys: k)
+        warning.stringValue = clashes.joined(separator: "\n")
+        warning.isHidden = clashes.isEmpty
+        place()
+    }
+
+    private func setKeys(_ change: (inout Keys) -> Void) {
+        guard let o = owner else { return }
+        var k = o.store.keys
+        change(&k)
+        o.store.keys = k
+        o.onKeysChange()
+        refresh()
+    }
+
+    @objc private func plainChanged() {
+        guard let m = (plainPop.selectedItem?.representedObject as? String).flatMap(PlainMod.init) else { return }
+        setKeys { $0.plain = m }
+    }
+
+    @objc private func pickChanged() {
+        guard let m = (pickPop.selectedItem?.representedObject as? String).flatMap(PickMod.init) else { return }
+        setKeys { $0.pick = m }
     }
 
     @objc private func orderChanged() { owner?.store.newestFirst = order.indexOfSelectedItem == 1 }
@@ -171,10 +248,20 @@ final class SettingsView: FlippedLayout {
     private func place() {
         // Under the toolbar, a column as System Settings' (its forms are 500-600 pt wide), centred.
         let top = (window?.contentLayoutRect.minY).map { _ in safeAreaInsets.top } ?? 0
+        scroll.frame = NSRect(x: 0, y: top, width: bounds.width, height: max(0, bounds.height - top))
         let w = min(580, bounds.width - 48)
-        column.frame = NSRect(x: (bounds.width - w) / 2, y: top + 24, width: w, height: bounds.height)
-        var y: CGFloat = 0
-        for g in groups { g.frame = NSRect(x: 0, y: y, width: w, height: g.height); g.layoutRows(); y += g.height + 12 }
+        let x = (bounds.width - w) / 2
+        var y: CGFloat = 24
+        for (i, g) in groups.enumerated() {
+            g.frame = NSRect(x: x, y: y, width: w, height: g.height); g.layoutRows(); y += g.height + 12
+            if i == warnAfter && !warning.isHidden {
+                warning.preferredMaxLayoutWidth = w - 24
+                let h = warning.sizeThatFits(NSSize(width: w - 24, height: 1000)).height
+                warning.frame = NSRect(x: x + 12, y: y - 6, width: w - 24, height: h)
+                y += h + 8
+            }
+        }
+        column.frame = NSRect(x: 0, y: 0, width: bounds.width, height: max(y + 12, scroll.contentSize.height))
     }
 
     @objc private func loginChanged() {
@@ -266,13 +353,16 @@ final class GroupBox: NSView {
     }
 }
 
-/// The shortcut field: shows the key; clicked, it waits for the next combination (Esc keeps the old one).
+/// The shortcut field: shows the key; clicked, it waits for the next combination (Esc keeps the old one). A global hot
+/// key needs ⌘, ⌥ or ⌃; a list key (`local`) may be any key, Return or ⌫ alone too.
 final class ShortcutButton: NSButton {
     var key = HotKey.standard { didSet { show() } }
     var onChange: ((HotKey) -> Void)?
     private var monitor: Any?
+    let local: Bool
 
-    init() {
+    init(local: Bool = false) {
+        self.local = local
         super.init(frame: .zero)
         bezelStyle = .push
         controlSize = .regular
@@ -288,7 +378,7 @@ final class ShortcutButton: NSButton {
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
             guard let self else { return e }
             if e.keyCode == 53 { self.end(); return nil }
-            if let k = HotKey.from(e) { self.key = k; self.end(); self.onChange?(k) }
+            if let k = self.local ? HotKey.local(e) : HotKey.from(e) { self.key = k; self.end(); self.onChange?(k) }
             return nil
         }
         show()
@@ -299,6 +389,39 @@ final class ShortcutButton: NSButton {
         monitor = nil
         show()
     }
+}
+
+/// Paste into Apps: «On» when macOS lets Copia press ⌘V, else a button that asks (App.explainPasting).
+final class AccessRow: NSView {
+    private let state = NSTextField(labelWithString: "")
+    private let button = NSButton(title: L("Allow…"), target: nil, action: nil)
+    var allow: () -> Void = {}
+    var allowed = false { didSet { state.isHidden = !allowed; button.isHidden = allowed; invalidateIntrinsicContentSize() } }
+
+    init() {
+        super.init(frame: .zero)
+        state.stringValue = L("On")
+        state.textColor = .secondaryLabelColor
+        state.font = .systemFont(ofSize: 13)
+        button.bezelStyle = .push
+        button.target = self; button.action = #selector(tap)
+        addSubview(state); addSubview(button)
+        allowed = false
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    @objc private func tap() { allow() }
+
+    override var fittingSize: NSSize {
+        state.sizeToFit(); button.sizeToFit()
+        let v: NSView = allowed ? state : button
+        return v.frame.size
+    }
+    override func layout() {
+        super.layout()
+        let v: NSView = allowed ? state : button
+        v.frame = NSRect(x: bounds.width - v.frame.width, y: (bounds.height - v.frame.height) / 2, width: v.frame.width, height: v.frame.height)
+    }
+    override var isFlipped: Bool { true }
 }
 
 // MARK: View Options (⌘J)
