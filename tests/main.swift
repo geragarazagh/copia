@@ -496,6 +496,9 @@ func queueTests() {
     var key = 100.0   // seconds since the last key press, as CGEventSource would say
     q.sinceKey = { key }
     q.sinceClick = { 100 }
+    q.sinceFlags = { 100 }
+    var cmd = false   // ⌘ held now
+    q.cmdDown = { cmd }
     var events: [String] = []
     q.onChange = { c in
         switch c { case .opened: events.append("open"); case .added(let i): events.append("add\(i)"); case .pasted(let i): events.append("paste\(i)"); case .closed: events.append("close") }
@@ -556,6 +559,26 @@ func queueTests() {
     check(got == ["first line", "second line", "last", "first line"], "four presses 90 ms apart paste the four items in order: \(got)")
     _ = wait(0.3) { false }
     check(q.left == 0, "all four used (\(q.left) left)")
+    q.close()
+    // The same with the clocks half a second late, as on his Mac (his trial 2026-11-15 10:47: twenty «1» in Notes): the
+    // key clock never shows a press after the item was placed, but ⌘ is held at every read.
+    q.open()
+    q.add(four)
+    key = 100; cmd = true
+    got = []
+    for _ in 0..<4 {
+        _ = wait(0.25) { false }
+        got.append(pb.string(forType: .string) ?? "-")
+    }
+    check(got == ["first line", "second line", "last", "first line"], "⌘ held, late clocks: four presses paste the four in order: \(got)")
+    // And with ⌘ let go and the clocks late, a read is no paste (another tool reading the clipboard).
+    cmd = false
+    _ = wait(0.3) { false }
+    check(q.left == 0, "all four used (\(q.left) left)")
+    q.close()
+    q.open(); q.add([ids[0], ids[1]])
+    _ = pb.string(forType: .string); _ = wait(0.3) { false }
+    check(q.left == 2, "no ⌘, no fresh key or click: a read is not a paste (\(q.left) left)")
     q.close()
     // Newest first (Settings, «Paste Order»): 4, 3, 2, 1; a copy made while it waits goes first.
     q.newestFirst = true
@@ -1241,6 +1264,7 @@ func shelfOnScreen() {
     let pb = NSPasteboard(name: .init("com.geragaraza.copia.test.shelf.\(getpid())"))
     let q = PasteQueue(store: st, pasteboard: pb)
     q.sinceKey = { 0.01 }
+    q.cmdDown = { false }
     let sh = Shelf(queue: q, store: st)
     let d = sh.deck
     sh.open(); _ = wait(0.6) { false }
@@ -1262,6 +1286,29 @@ func shelfOnScreen() {
         if let p = d.snap.end() { st.setSetting(d.placeKey + screenKey(s), p.rawValue) }
         _ = wait(0.6) { false }
         check(d.origin == ps.point(.topLeft) && d.placeFor(s) == .topLeft, "dragged to the top left: there, remembered")
+        // Two fingers sideways on the trackpad (his word 2026-11-15 10:47): a short swipe comes back, a long one sends the
+        // deck off the edge and closes the queue.
+        func swipe(_ steps: [Double]) {
+            var t = ProcessInfo.processInfo.systemUptime
+            for (k, dx) in steps.enumerated() {
+                guard let ce = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: 0, wheel2: Int32(dx), wheel3: 0) else { continue }
+                ce.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+                ce.setDoubleValueField(.scrollWheelEventPointDeltaAxis2, value: dx)
+                ce.setIntegerValueField(.scrollWheelEventScrollPhase, value: k == 0 ? 1 : (k == steps.count - 1 ? 4 : 2))
+                t += 0.016; ce.timestamp = CGEventTimestamp(t * 1e9)
+                if let e = NSEvent(cgEvent: ce) { d.view.scrollWheel(with: e) }
+                _ = wait(0.016) { false }
+            }
+        }
+        let rest = d.window.frame.origin
+        swipe([0, 4, 4, 4, 0])
+        _ = wait(0.4) { false }
+        check(q.isOpen && d.window.frame.origin == rest, "a short swipe: the deck comes back, the queue stays (\(d.window.frame.origin) vs \(rest))")
+        swipe([0] + Array(repeating: 14, count: 10) + [0])
+        _ = wait(0.6) { false }
+        check(!q.isOpen && !d.window.isVisible, "a long swipe: off the edge, the queue closed")
+        sh.open(); _ = wait(0.6) { false }
+        check(d.window.isVisible && d.origin == ps.point(.topLeft), "opened again: back at its place")
     }
     sh.close(); _ = wait(0.4) { false }
     check(!d.window.isVisible, "closed")

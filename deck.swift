@@ -80,7 +80,7 @@ final class Deck: NSObject, NSDraggingSource {
     private func appear() {
         let mouse = NSEvent.mouseLocation
         screen = trialScreen() ?? NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
-        motion.stop(); snap.ticker.stop()
+        motion.stop(); snap.ticker.stop(); swipeTicker.stop(); swipe = nil
         for (_, c) in cards { c.removeFromSuperview() }
         cards = []
         rebuild(animated: false)
@@ -187,6 +187,69 @@ final class Deck: NSObject, NSDraggingSource {
     }
     private var flying: [Ticker] = []
 
+    // MARK: swiped away
+
+    /// A two-finger swipe sideways on the deck sends it off that edge and closes the queue (his word 2026-11-15 10:47,
+    /// as the screenshot thumbnail goes when swiped): the deck follows the fingers; let go far or fast enough, it slides
+    /// off; otherwise it comes back. Up and down are left alone.
+    private var swipe: (dx: CGFloat, horizontal: Bool?, base: NSPoint, speed: CGFloat, at: TimeInterval)?
+    private let swipeTicker = Ticker()
+
+    func scrolled(_ e: NSEvent) {
+        guard e.hasPreciseScrollingDeltas, e.momentumPhase == [], queue.isOpen else { return }
+        if e.phase == .began || swipe == nil {
+            guard e.phase == .began || e.phase == .changed else { return }
+            swipeTicker.stop()
+            swipe = (0, nil, window.frame.origin, 0, e.timestamp)
+        }
+        guard var s = swipe else { return }
+        // The way the fingers moved: with natural scrolling the deltas already follow them.
+        let fx = e.isDirectionInvertedFromDevice ? e.scrollingDeltaX : -e.scrollingDeltaX
+        let fy = e.isDirectionInvertedFromDevice ? e.scrollingDeltaY : -e.scrollingDeltaY
+        if e.phase == .began || e.phase == .changed {
+            if s.horizontal == nil, abs(fx) + abs(fy) > 0 { s.horizontal = abs(fx) > abs(fy) }
+            if s.horizontal == true {
+                s.dx += fx
+                let dt = e.timestamp - s.at
+                if dt > 0 { s.speed = fx / CGFloat(dt) }
+                s.at = e.timestamp
+                window.setFrameOrigin(NSPoint(x: s.base.x + s.dx, y: s.base.y))
+            }
+            swipe = s
+            return
+        }
+        swipe = nil
+        guard s.horizontal == true else { return }
+        let fast = abs(s.speed) > 500 && abs(s.dx) > 12 && (s.speed > 0) == (s.dx > 0)
+        if e.phase == .ended, abs(s.dx) > 60 || fast { swipeOff(right: s.dx > 0, from: s.base) } else { swipeBack(to: s.base) }
+    }
+
+    private func swipeBack(to base: NSPoint) {
+        let from = window.frame.origin
+        swipeTicker.run { [weak self] t in
+            let k = CGFloat(Curve.bezier(min(1, t / 0.2), 0, 0, 0.58, 1))
+            self?.window.setFrameOrigin(NSPoint(x: from.x + (base.x - from.x) * k, y: base.y))
+            return t < 0.2
+        }
+    }
+
+    /// Off the edge it was swiped towards, accelerating as a pasted card leaves; then the queue closes.
+    private func swipeOff(right: Bool, from base: NSPoint) {
+        let f = window.frame, edges = (screen ?? window.screen)?.frame ?? f
+        let start = f.origin.x, d = right ? edges.maxX - f.minX : -(f.maxX - edges.minX)
+        let dur = 0.23 * max(1, (Double(abs(d)) / 200).squareRoot())
+        swipeTicker.run { [weak self] t in
+            guard let self else { return false }
+            let k = CGFloat(Curve.bezier(min(1, t / dur), 0.42, 0, 1, 1))
+            self.window.setFrameOrigin(NSPoint(x: start + d * k, y: f.minY))
+            if t >= dur {
+                self.window.orderOut(nil)
+                self.queue.close()
+            }
+            return t < dur
+        }
+    }
+
     // MARK: the front card dragged out
 
     private var draggedIndex: Int?
@@ -290,6 +353,7 @@ final class DeckView: NSView {
         owner?.dragOut(event: e)
     }
     override func mouseUp(with e: NSEvent) { down = nil }
+    override func scrollWheel(with e: NSEvent) { owner?.scrolled(e) }
 }
 
 /// One card: the item large, as Quick Look's first look shows it: a picture filling the card, a file's icon with its

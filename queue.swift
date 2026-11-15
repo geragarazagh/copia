@@ -3,10 +3,11 @@
 // or many tabs, then paste them one by one). Maccy, Copy and Whisk watch the keyboard for it, which takes Accessibility
 // or Input Monitoring; Copia asks for no permission (clipboard.md, «Decided»), so it learns of a paste the way Clipbara
 // does (code read 2026-11-14): the next item is on the clipboard as PROMISED data, and the app that pastes it has to ask
-// Copia for the bytes. An ask that follows a key press or a click made after the item was put there is a paste; reads
-// with nothing behind them (another clipboard tool, a background check) only get the data. When the asks of one paste
-// have stopped for a moment, the next item takes its place.
+// Copia for the bytes. An ask while ⌘ is held (⌘V), or after a key or a click made since the item was put there (Edit >
+// Paste, a Paste button), is a paste; reads with nothing behind them (another clipboard tool, a background check) only
+// get the data. When the asks of one paste have stopped for a moment, the next item takes its place.
 import AppKit
+import Carbon.HIToolbox
 
 final class PasteQueue: NSObject {
     let store: Store
@@ -49,9 +50,38 @@ final class PasteQueue: NSObject {
     private var settleTimer: Timer?
     private var renewTimer: Timer?
     private var renewAfter = 0.05
-    /// The tests set the times of the last key and click (CGEventSource gives the session's real ones).
+    /// What the keyboard and mouse are doing, as the session tells any app without a permission; the tests set them.
+    /// ⌘ held, and which keys are down, are read live. The «seconds since the last key / modifier / click» clocks are
+    /// not: measured on his Mac 2026-11-15 (macOS 27.2, no Input Monitoring for anyone), ⌘C and two Space presses showed
+    /// as down at once while the key clock still said 240, 8 and 76 s; a modifier came half a second late. So a ⌘V
+    /// 0.25 s after the last one read as older than the item placed after that one: no paste, the same item promised
+    /// again, and his 1-2-3-4-5 in Notes came out as twenty «1» (his recording 10:47, read at 4-10 fps; slower presses,
+    /// 0.6 s apart, went in order). In `cs` keys came by pid and a stub stood in for the clock, so it was never seen
+    /// there. The clocks stay for a paste with ⌘ already let go (a slow app, Edit > Paste by mouse).
+    var cmdDown: () -> Bool = { CGEventSource.flagsState(.combinedSessionState).contains(.maskCommand) }
+    var vDown: () -> Bool = { CGEventSource.keyState(.combinedSessionState, key: PasteQueue.vKey) }
     var sinceKey: () -> Double = { CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .keyDown) }
+    var sinceFlags: () -> Double = { CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .flagsChanged) }
     var sinceClick: () -> Double = { CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .leftMouseUp) }
+
+    /// The key that types «v» with ⌘ in the person's layout (⌘ shortcuts use the ASCII-capable layout: Russian keeps
+    /// the US key, Dvorak moves it); traced beside ⌘ to see whether ⌘ alone ever reads as a paste that was not one.
+    static let vKey: CGKeyCode = {
+        guard let src = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue(),
+              let ptr = TISGetInputSourceProperty(src, kTISPropertyUnicodeKeyLayoutData) else { return 9 }
+        let data = Unmanaged<CFData>.fromOpaque(ptr).takeUnretainedValue() as Data
+        return data.withUnsafeBytes { raw -> CGKeyCode in
+            guard let layout = raw.baseAddress?.assumingMemoryBound(to: UCKeyboardLayout.self) else { return 9 }
+            for code in 0..<UInt16(128) {
+                var dead: UInt32 = 0, len = 0
+                var chars = [UniChar](repeating: 0, count: 4)
+                let r = UCKeyTranslate(layout, code, UInt16(kUCKeyActionDown), UInt32(cmdKey >> 8) & 0xFF, UInt32(LMGetKbdType()),
+                                       OptionBits(kUCKeyTranslateNoDeadKeysBit), &dead, 4, &len, &chars)
+                if r == noErr, len == 1, chars[0] == 0x76 { return CGKeyCode(code) }
+            }
+            return 9
+        }
+    }()
 
     init(store: Store, pasteboard: NSPasteboard = .general) {
         self.store = store
@@ -127,10 +157,14 @@ final class PasteQueue: NSObject {
     func asked() {
         asks += 1
         let since = ProcessInfo.processInfo.systemUptime - placedAt
-        let key = sinceKey(), click = sinceClick()
-        // A key went down after the item was placed (⌘V; ⌘ may already be up when a slow app reads), or a click did
-        // (Edit > Paste, a Paste button), and not long ago.
-        let paste = (key < since && key < 1.0) || (click < since && click < 1.5)
+        let cmd = cmdDown(), key = sinceKey(), flags = sinceFlags(), click = sinceClick()
+        // ⌘ is held (⌘V, ⇧⌘V, ⌥⇧⌘V); or a key or a modifier went down or up after the item was placed (⌘ already let go
+        // when a slow app reads), or a click did (Edit > Paste, a Paste button), and not long ago.
+        let paste = cmd || (key < since && key < 1.0) || (flags < since && flags < 1.0) || (click < since && click < 1.5)
+        if traceEvents {
+            FileHandle.standardError.write(Data(String(format: "  since %.3f cmd %d v %d key %.3f flags %.3f click %.3f -> %@\n",
+                since, cmd ? 1 : 0, vDown() ? 1 : 0, key, flags, click, paste ? "paste" : (pasting ? "same paste" : "no")).utf8))
+        }
         guard paste || pasting else {
             // Served, but no paste: the pasteboard now holds these bytes itself and would not ask at the real ⌘V
             // (measured in the tests: a second read never reaches the provider). So the same item is promised anew
