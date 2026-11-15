@@ -1208,6 +1208,41 @@ func qlCrash() {
 }
 
 /// The panel on a real screen (the agents' own session): focus on opening, ⌘F, Esc step by step, Return, the place.
+/// The paste queue's shelf on a real screen: the history's panel in queue mode, never key, at the bottom right; a paste
+/// takes the top row away with the bottom edge staying, and the next row is picked.
+func shelfOnScreen() {
+    let dir = tmpDir("shelf")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let (st, ids) = seeded(dir, Array(mockSpecs().prefix(4)))
+    let pb = NSPasteboard(name: .init("com.geragaraza.copia.test.shelf.\(getpid())"))
+    let q = PasteQueue(store: st, pasteboard: pb)
+    q.sinceKey = { 0.01 }
+    let sh = Shelf(queue: q, store: st, kind: .panel)
+    let pc = sh.panel!
+    sh.open(); _ = wait(0.3) { false }
+    check(pc.window!.isVisible && !pc.window!.isKeyWindow && !pc.window!.canBecomeKey,
+          "the shelf shows and takes no keyboard (visible \(pc.window!.isVisible), key \(pc.window!.isKeyWindow))")
+    check(pc.rows.isEmpty, "opens empty")
+    q.add([ids[0], ids[1], ids[2]]); _ = wait(0.4) { false }
+    if let s = pc.screen {
+        let f = pc.panelScreenRect
+        check(abs(f.maxX - (s.visibleFrame.maxX - screenGap)) < 0.5 && abs(f.minY - (s.visibleFrame.minY + screenGap)) < 0.5,
+              "at the bottom right place: \(f) in \(s.visibleFrame)")
+        check(pc.rows.count == 3 && pc.rowLook(0).0 && !pc.rowLook(1).0 && pc.rowLook(1).1 == 2, "three rows, the first picked, numbered by copy order")
+        _ = wait(0.1) { false }
+        // ⌘V: the app asks for the item's first type it takes (the mock's first entries are files and pictures).
+        let t = pb.pasteboardItems?.first?.types.first { $0 != .own && $0 != .source }
+        _ = t.flatMap { pb.data(forType: $0) }
+        _ = wait(PasteQueue.settle + 0.5) { false }
+        let g = pc.panelScreenRect
+        check(pc.rows.count == 2 && pc.rowLook(0).1 == 2 && abs(g.minY - f.minY) < 0.5 && g.height < f.height,
+              "a paste: the top row gone, the next picked, the bottom edge kept (\(f) → \(g))")
+    }
+    sh.close(); _ = wait(0.3) { false }
+    check(!pc.window!.isVisible, "closed")
+    pb.releaseGlobally()
+}
+
 func panelOnScreen() {
     let dir = tmpDir("onscreen")
     defer { try? FileManager.default.removeItem(at: dir) }
@@ -1292,7 +1327,7 @@ case "write" where argv.count >= 3:   // another app copying: TEXT on the genera
     it.setString(argv[2], forType: .string)
     if argv.count > 3 { it.setString("<b>\(argv[2])</b>", forType: .html) }
     pb.writeObjects([it]); exit(0)
-case "screen": qlCrash(); panelOnScreen(); finish("screen")
+case "screen": qlCrash(); panelOnScreen(); shelfOnScreen(); finish("screen")
 case "readtiff" where argv.count == 3:   // copy's helper: another process asking for the TIFF
     let d = NSPasteboard(name: .init(argv[2])).pasteboardItems?.first?.data(forType: .tiff)
     print(d.flatMap { NSBitmapImageRep(data: $0) }?.pixelsWide ?? 0); exit(0)
