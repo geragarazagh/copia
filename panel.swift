@@ -236,8 +236,11 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     /// The place chosen for this screen (drag and snap, place.swift); top centre until the person moves it.
     func placeFor(_ s: NSScreen) -> Place { store.setting("place." + screenKey(s)).flatMap(Place.init) ?? .standard }
 
-    // Drag state (place.swift).
+    // Drag state (place.swift): the place holding the panel (nil while it follows the hand), where the hand would put
+    // it, and the places of this drag (nil when no drag runs).
     var dragPlace: Place?
+    var dragRaw = NSPoint.zero
+    var dragPlaces: Places?
     let settleTicker = Ticker()
     /// Counted for the tests (the trackpad's tap itself cannot be observed).
     var hapticTaps = 0
@@ -303,6 +306,7 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         let r = Copia.write(picked.map { ($0, store.reps($0.id)) }, store: store, to: pasteboard)
         monitor?.ownCount = r.count
         used(picked.map(\.id))
+        copied(picked.map(\.id))
         hide()
     }
 
@@ -313,6 +317,9 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         store.touch(ids)
         afterChange()
     }
+
+    /// Set by the app: picks copied out of the panel join the paste queue when it is open, as any copy does.
+    var copied: ([Int64]) -> Void = { _ in }
 
     /// Set by the app: the big window reads the store again after a change made here.
     var afterChange: () -> Void = {}

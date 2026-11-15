@@ -11,6 +11,7 @@
 // Trial flags (Claude's checks on a virtual display of its own, never on the person's screen):
 //   --display ID     windows open on the screen of this CGDirectDisplayID instead of the one with the pointer
 //   --show           open the panel at launch; --browser [PANE] opens the big window (all, text, …, settings)
+//   --queue          open the paste queue at launch (in a trial it also watches the session's clipboard)
 //   --trial          no hot key, no clipboard watching, no login item change: nothing that touches the person's Mac
 //   --appearance light|dark
 import AppKit

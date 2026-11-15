@@ -71,11 +71,18 @@ func screenKey(_ s: NSScreen) -> String {
 }
 
 /// Dragging the panel (his pick 2026-11-14 10:13: by its edge, like Spotlight; widened in 0.5 to his seven places).
-/// His second review of 0.4 (17:59): it must never drift, «не должна дрейфовать влево, вправо, вверх, вниз», and sits
-/// only at exact, measured places. So the panel never follows the pointer freely: taken by its edge it stays where it
-/// is until the pointer is clearly nearer another place, then it moves there whole, in one short eased step (150 ms,
-/// no overshoot, the trackpad's alignment tap), and stays exact again. Every frame of a drag is a place or the step
-/// between two; 0.4's free drag with rubber bands and a spring showed the hand's sideways drift and in-between spots.
+/// 0.5 and 0.6 never let the panel follow the hand: it stood still until the pointer was 40 pt nearer another place,
+/// then leapt there whole in 150 ms. Measured in his recording of 2026-11-15 (120 fps): leaps of 260-540 pt with the
+/// panel motionless in between, which he called «дёрганно… магнитится по-конченому очень сильно». Spotlight on 27.2,
+/// dragged in the same recording, follows the hand point for point; its centre line holds it until the hand is 26-30 pt
+/// past, then lets go; coming back it is caught with no jump at all («аккуратненько, раз, раз»).
+/// So since 0.7 the panel follows the hand, and each of the seven places is a soft magnet: caught within `snapIn`,
+/// held until the hand is `snapOut` away (a shake smaller than that does not move it: the part of 0.6 he liked,
+/// «телепаешь в разные стороны, но она не телепается»), and both the catch and the letting go are a 120 ms eased
+/// slide, not a jump. Let go between places, it slides to the nearest one: at rest it is always at a place, exact
+/// (his 0.4 review: «не должна дрейфовать»).
+let snapIn: CGFloat = 16, snapOut: CGFloat = 30, snapStep = 0.12
+
 struct Places {
     var tops: [CGFloat]    // rows: top, middle, bottom
     var lefts: [CGFloat]   // columns: left, centre, right
@@ -87,11 +94,13 @@ struct Places {
         Place.allCases.min { dist(point($0), q) < dist(point($1), q) }!
     }
 
-    /// Where a drag goes from `current` when the panel would be at `raw`: another place only when it is nearer by
-    /// more than `hysteresis`, so a hand resting between two places does not make the panel flicker.
-    func next(from current: Place, raw: NSPoint, hysteresis: CGFloat = 40) -> Place {
-        let n = nearest(raw)
-        return dist(point(n), raw) + hysteresis < dist(point(current), raw) ? n : current
+    /// The place at exactly this point, if any.
+    func at(_ q: NSPoint) -> Place? { Place.allCases.first { point($0) == q } }
+
+    /// The box the places span: the panel never goes past its outermost places, so pushing it against a side or a
+    /// corner holds it there, as Spotlight's top holds it (one margin from the screen's edges all round).
+    func clamp(_ q: NSPoint) -> NSPoint {
+        NSPoint(x: min(max(q.x, lefts.min()!), lefts.max()!), y: min(max(q.y, tops.min()!), tops.max()!))
     }
 }
 
@@ -109,9 +118,9 @@ extension PanelController {
     /// Follows the mouse from a mouse-down on the panel's edge until it goes up (a tracking loop, as AppKit's own
     /// window dragging does; the motion timer keeps running in the tracking mode).
     func drag(from down: NSEvent) {
-        guard let w = window, let ps = places, let s = screen else { return }
-        dragBegin(placeFor(s))
-        let p0 = trialPointer ?? NSEvent.mouseLocation, start = ps.point(placeFor(s))
+        guard let w = window, let ps = places else { return }
+        dragBegin(places: ps)
+        let p0 = trialPointer ?? NSEvent.mouseLocation, start = NSPoint(x: left, y: top)
         while let e = w.nextEvent(matching: [.leftMouseDragged, .leftMouseUp], until: .distantFuture, inMode: .eventTracking, dequeue: true) {
             let p = trialPointer ?? NSEvent.mouseLocation
             dragMove(raw: NSPoint(x: start.x + (p.x - p0.x), y: start.y + (p.y - p0.y)), places: ps)
@@ -120,30 +129,59 @@ extension PanelController {
         dragEnd()
     }
 
-    func dragBegin(_ p: Place) { dragPlace = p }
+    /// Taken by the edge: held at its place, or, caught while still sliding to one, free from where it is.
+    func dragBegin(places ps: Places) {
+        settleTicker.stop()
+        let here = NSPoint(x: left, y: top)
+        dragPlaces = ps
+        dragPlace = ps.at(here)
+        dragRaw = here
+    }
 
-    /// One step of a drag: a new place when the pointer is clearly nearer to it, reached in one short step.
-    func dragMove(raw: NSPoint, places ps: Places) {
-        guard let cur = dragPlace else { return }
-        let n = ps.next(from: cur, raw: raw)
-        guard n != cur else { return }
-        dragPlace = n
-        haptic()
-        let from = NSPoint(x: left, y: top), to = ps.point(n), d = 0.15
+    /// One step of a drag: where the hand would put the panel is `raw`.
+    func dragMove(raw r: NSPoint, places ps: Places) {
+        guard dragPlaces != nil else { return }
+        dragRaw = ps.clamp(r)
+        if let held = dragPlace {
+            if dist(ps.point(held), dragRaw) > snapOut { dragPlace = nil; glide(snapStep) }
+        } else {
+            let n = ps.nearest(dragRaw)
+            if dist(ps.point(n), dragRaw) <= snapIn { dragPlace = n; haptic(); glide(snapStep) }
+        }
+        if !settleTicker.running { put(dragTarget) }
+    }
+
+    /// Where the panel goes now: its place while held, else under the hand.
+    private var dragTarget: NSPoint { dragPlace.flatMap { p in dragPlaces?.point(p) } ?? dragRaw }
+
+    private func put(_ p: NSPoint) { left = p.x.rounded(); setBox(height: height, top: p.y.rounded()) }
+
+    /// An eased slide from where the panel is drawn to the target, which may keep moving with the hand meanwhile.
+    private func glide(_ d: Double) {
+        let from = NSPoint(x: left, y: top)
         settleTicker.run { [weak self] t in
             guard let self else { return false }
-            let k = Curve.ease(min(1, t / d))
-            self.left = (from.x + (to.x - from.x) * CGFloat(k)).rounded()
-            self.setBox(height: self.height, top: (from.y + (to.y - from.y) * CGFloat(k)).rounded())
-            if t >= d { self.left = to.x; self.setBox(height: self.height, top: to.y) }
+            let to = self.dragTarget, k = Curve.ease(min(1, t / d))
+            self.put(t >= d ? to : NSPoint(x: mix(from.x, to.x, k), y: mix(from.y, to.y, k)))
             return t < d
         }
     }
 
-    /// Let go: the place it is at is remembered for this screen.
+    /// Let go: held, it stays; between places, it slides to the nearest one, longer for a longer way: 0.2 s plus 1 s per
+    /// 1500 pt, at most 0.45 s (a first 0.3 s cap moved it 88 pt in one frame over 380 pt in the trial of 2026-11-15;
+    /// this keeps the fastest frame near 30 pt). The place is remembered for this screen.
     func dragEnd() {
-        if let p = dragPlace, let sc = screen { store.setSetting("place." + screenKey(sc), p.rawValue) }
-        dragPlace = nil
+        guard let ps = dragPlaces else { return }
+        if dragPlace == nil {
+            let n = ps.nearest(dragRaw)
+            dragPlace = n
+            glide(min(0.45, 0.2 + Double(dist(ps.point(n), NSPoint(x: left, y: top))) / 1500))
+        }
+        if let p = dragPlace {
+            dragRaw = ps.point(p)   // with no drag running, dragTarget is this: a slide still running ends there
+            if let sc = screen { store.setSetting("place." + screenKey(sc), p.rawValue) }
+        }
+        dragPlaces = nil
     }
 
     /// Settings' «Position on Screen»: the place for the screen the panel opens on (the main one when it is closed).

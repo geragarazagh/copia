@@ -10,6 +10,9 @@ import ServiceManagement
 struct HotKey: Equatable {
     var code: UInt32, mods: UInt32   // Carbon modifiers (cmdKey, optionKey, …)
     static let standard = HotKey(code: UInt32(kVK_ANSI_C), mods: UInt32(cmdKey | optionKey))   // ⌥⌘C, his key
+    /// The paste queue's key, his idea 2026-11-15: ⌃⌥C, the panel's letter with ⌃ for ⌘ (free on macOS 27.2: no
+    /// system or Finder shortcut uses it).
+    static let queue = HotKey(code: UInt32(kVK_ANSI_C), mods: UInt32(controlKey | optionKey))
 
     init(code: UInt32, mods: UInt32) { self.code = code; self.mods = mods }
     init?(_ s: String) {
@@ -63,6 +66,10 @@ extension Store {
         get { setting("hotkey").flatMap(HotKey.init) ?? .standard }
         set { setSetting("hotkey", newValue.stored) }
     }
+    var queueKey: HotKey {
+        get { setting("queuekey").flatMap(HotKey.init) ?? .queue }
+        set { setSetting("queuekey", newValue.stored) }
+    }
 }
 
 extension Keep {
@@ -82,6 +89,7 @@ final class SettingsView: FlippedLayout {
     weak var owner: BrowserController?
     private let column = FlippedView()
     private let recorder = ShortcutButton()
+    private let queueRecorder = ShortcutButton()
     private let login = NSSwitch()
     private let keep = NSPopUpButton()
     private let position = NSPopUpButton()
@@ -96,6 +104,11 @@ final class SettingsView: FlippedLayout {
         recorder.onChange = { [weak self] k in
             guard let o = self?.owner else { return }
             o.store.hotKey = k
+            o.onHotKeyChange?()
+        }
+        queueRecorder.onChange = { [weak self] k in
+            guard let o = self?.owner else { return }
+            o.store.queueKey = k
             o.onHotKeyChange?()
         }
         login.target = self; login.action = #selector(loginChanged)
@@ -117,7 +130,8 @@ final class SettingsView: FlippedLayout {
         clear.target = self; clear.action = #selector(clearHistory)
 
         groups = [
-            GroupBox(rows: [(L("Show History"), recorder), (L("Position on Screen"), position), (L("Open at Login"), login)]),
+            GroupBox(rows: [(L("Show History"), recorder), (L("Paste Queue"), queueRecorder), (L("Position on Screen"), position),
+                            (L("Open at Login"), login)]),
             GroupBox(rows: [(L("Keep History"), keep)]),
             GroupBox(rows: [("", clear)], centered: true),
         ]
@@ -130,6 +144,7 @@ final class SettingsView: FlippedLayout {
     func refresh() {
         guard let o = owner else { return }
         recorder.key = o.store.hotKey
+        queueRecorder.key = o.store.queueKey
         login.state = loginItem.status == .enabled ? .on : .off
         keep.selectItem(withTitle: o.store.keep.title)
         let p = NSScreen.main.flatMap { o.store.setting("place." + screenKey($0)).flatMap(Place.init) } ?? .standard

@@ -275,8 +275,8 @@ func unit() {
     check(Place.allCases.count == 7 && Place.at(.middle, .left) == nil && Place(rawValue: "middle") == .middle && Place(rawValue: "top") == .top,
           "seven places; 0.4's stored «top», «middle», «bottom» still read")
 
-    // Drag (place.swift): the panel is only ever at one of its seven places or on the short step between two; the
-    // hand's drift never moves it (his second review: «не должна дрейфовать»); the place remembered per screen.
+    // Drag (place.swift, 0.7): the panel follows the hand; each place is a soft magnet (caught within 16 pt, held until
+    // 30 pt, both by a 120 ms slide); let go between places, it slides to the nearest; at rest always exact.
     if let main = NSScreen.main {
         let gdir = tmpDir("snap")
         let gs = try! Store(dir: gdir)
@@ -288,37 +288,58 @@ func unit() {
         let ps = dc.places!
         func at(_ p: Place) { dc.left = ps.point(p).x; dc.setBox(height: dc.height, top: ps.point(p).y) }
         func isPlace() -> Bool { Place.allCases.contains { ps.point($0) == NSPoint(x: dc.left, y: dc.top) } }
+        func frames(_ n: Int) { for _ in 0..<n { Ticker.advance(1.0 / 60) } }
         at(.top)
         Ticker.manual = true
         let start = ps.point(.top)
-        // Wiggling by up to 60 pt around the top centre: it does not move a point.
-        dc.dragBegin(.top)
-        for k in 0..<40 { dc.dragMove(raw: NSPoint(x: start.x + CGFloat((k % 7) - 3) * 12, y: start.y - CGFloat(k % 5) * 8), places: ps) }
-        check(dc.left == start.x && dc.top == start.y && dc.hapticTaps == 0, "the hand's drift does not move it")
-        // Down to the middle: one step, one tap, exact at the end, never anywhere else on the way.
-        var seen: [NSPoint] = []
+        // A shake of up to 18 pt sideways and 20 pt down around the top centre (27 pt at most): it does not move a point.
+        dc.dragBegin(places: ps)
+        for k in 0..<40 {
+            dc.dragMove(raw: NSPoint(x: start.x + CGFloat((k % 7) - 3) * 6, y: start.y - CGFloat(k % 5) * 5), places: ps)
+            Ticker.advance(1.0 / 60)
+        }
+        check(dc.left == start.x && dc.top == start.y && dc.hapticTaps == 0, "a shake inside the magnet does not move it")
+        // Down to the middle at 6 pt a frame: it lets go at 30 pt, follows the hand, is caught at the middle with one tap,
+        // and no frame moves it more than 16 pt (0.6 leapt 264 pt in 150 ms).
+        var seen: [NSPoint] = [NSPoint(x: dc.left, y: dc.top)]
+        var hand = start
         for y in stride(from: start.y, through: ps.point(.middle).y, by: -6) {
-            dc.dragMove(raw: NSPoint(x: start.x + 5, y: y), places: ps)
+            hand = NSPoint(x: start.x + 5, y: y)
+            dc.dragMove(raw: hand, places: ps)
             Ticker.advance(1.0 / 60); seen.append(NSPoint(x: dc.left, y: dc.top))
         }
-        for _ in 0..<12 { Ticker.advance(1.0 / 60) }
+        let steps = zip(seen, seen.dropFirst()).map { dist($0, $1) }
+        check(steps.max()! <= 16, "smooth: the largest step in one frame is \(steps.max()!) pt")
+        check(seen.contains { $0.y < start.y - 40 && $0.y > ps.point(.middle).y + 40 }, "it follows the hand between the places")
+        check(zip(seen, seen.dropFirst()).allSatisfy { $1.y <= $0.y }, "down only, never back up")
+        frames(12)
         dc.dragEnd()
+        frames(30)
         check(isPlace() && dc.placeFor(main) == .middle && dc.hapticTaps == 1, "dragged to the centre: there exactly, remembered, one tap")
-        check(seen.allSatisfy { $0.x == start.x }, "a vertical drag never moves it sideways")
-        // Every drawn position is a place or on the straight step between the two.
-        let a = ps.point(.top), b = ps.point(.middle)
-        check(seen.allSatisfy { p in p.x == a.x && p.y <= a.y && p.y >= b.y }, "between two places only on the step")
-        // To the bottom right, then the top left: exact each time.
-        dc.dragBegin(.middle)
-        dc.dragMove(raw: ps.point(.bottomRight), places: ps)
-        for _ in 0..<12 { Ticker.advance(1.0 / 60) }
+        // Let go between places: it slides to the nearest one, exact.
+        dc.dragBegin(places: ps)
+        let mid = ps.point(.middle), br = ps.point(.bottomRight)
+        dc.dragMove(raw: NSPoint(x: mid.x + (br.x - mid.x) * 0.7, y: mid.y + (br.y - mid.y) * 0.7), places: ps)
+        frames(10)
+        check(!isPlace(), "between the places while the hand holds it there")
         dc.dragEnd()
-        check(dc.placeFor(main) == .bottomRight && NSPoint(x: dc.left, y: dc.top) == ps.point(.bottomRight), "bottom right, exact")
-        dc.dragBegin(.bottomRight)
+        var slide = [NSPoint(x: dc.left, y: dc.top)]
+        for _ in 0..<30 { Ticker.advance(1.0 / 60); slide.append(NSPoint(x: dc.left, y: dc.top)) }
+        let fastest = zip(slide, slide.dropFirst()).map { dist($0, $1) }.max()!
+        check(fastest <= 40, "the slide to the place: at most \(Int(fastest)) pt in a frame")
+        check(dc.placeFor(main) == .bottomRight && NSPoint(x: dc.left, y: dc.top) == br, "let go nearer the bottom right: slides there, exact")
+        dc.dragBegin(places: ps)
         dc.dragMove(raw: NSPoint(x: ps.point(.topLeft).x + 30, y: ps.point(.topLeft).y - 20), places: ps)
-        for _ in 0..<12 { Ticker.advance(1.0 / 60) }
+        frames(12)
         dc.dragEnd()
+        frames(30)
         check(dc.placeFor(main) == .topLeft && NSPoint(x: dc.left, y: dc.top) == ps.point(.topLeft), "top left, exact")
+        // Pushed past the screen's corner it stays at the corner place.
+        dc.dragBegin(places: ps)
+        dc.dragMove(raw: NSPoint(x: ps.point(.topLeft).x - 200, y: ps.point(.topLeft).y + 200), places: ps)
+        frames(12)
+        check(NSPoint(x: dc.left, y: dc.top) == ps.point(.topLeft), "never past the outermost places")
+        dc.dragEnd()
         // The middle row has the centre only.
         check(ps.nearest(NSPoint(x: ps.point(.topLeft).x, y: ps.point(.middle).y)) != .middle || true, "no left or right place in the middle row")
         check(!Place.allCases.contains { ps.point($0) == NSPoint(x: ps.lefts[0], y: ps.tops[1]) }, "no place at the middle left")
@@ -433,6 +454,7 @@ func unit() {
     browserTests()
     orderTests()
     dragTests()
+    queueTests()
     // ⌘ shortcuts whatever the layout: a Cyrillic «ф» on the A key is read as «a» (macOS 27.2: ⌘A did nothing).
     do {
         func cmd(_ ch: String, _ code: UInt16) -> NSEvent {
@@ -451,6 +473,68 @@ func unit() {
         b.frame = NSRect(x: 5, y: 5, width: 20, height: 20); check(b.frame.width > 20, "a capsule stays one after a layout")
     }
     finish("unit")
+}
+
+/// The paste queue (queue.swift) on a private pasteboard: the next item is promised, an ask after a key is a paste and
+/// moves the queue on once the asks stop, an ask with no key behind it only gets the data, several asks of one paste
+/// count once, and closing leaves the item on the clipboard as ordinary data.
+func queueTests() {
+    let dir = tmpDir("queue")
+    let now = Date()
+    let (st, ids) = seeded(dir, [(textSnap("first line"), now), (textSnap("second line"), now.addingTimeInterval(1)),
+                                 (imageSnap(testImage("q", (0, 0.5, 1))), now.addingTimeInterval(2)), (textSnap("last"), now.addingTimeInterval(3))])
+    let pb = NSPasteboard(name: .init("com.geragaraza.copia.queue.\(getpid())"))
+    let q = PasteQueue(store: st, pasteboard: pb)
+    var key = 100.0   // seconds since the last key press, as CGEventSource would say
+    q.sinceKey = { key }
+    q.sinceClick = { 100 }
+    var events: [String] = []
+    q.onChange = { c in
+        switch c { case .opened: events.append("open"); case .added(let i): events.append("add\(i)"); case .pasted(let i): events.append("paste\(i)"); case .closed: events.append("close") }
+    }
+    var emptied = 0
+    q.onEmptied = { emptied += 1 }
+    func settle() { _ = wait(PasteQueue.settle + 0.25) { false } }
+    q.add([ids[0]])
+    check(q.ids.isEmpty && events.isEmpty, "closed: copies do not join")
+    q.open()
+    q.add([ids[0], ids[1]])
+    check(q.left == 2 && pb.pasteboardItems?.first?.types.contains(.own) == true, "two in the queue, the first on the clipboard, marked as ours")
+    // A read with no key behind it (another clipboard tool, a background check): the data, but no paste.
+    _ = wait(0.05) { false }
+    check(pb.string(forType: .string) == "first line" && q.asks >= 1 && q.pastes == 0, "a read with no key: served, not a paste")
+    settle()
+    check(q.next == 0, "the queue stays on the first item")
+    // ⌘V: a key after the item was placed; the app reads plain text and then RTF and HTML: one paste.
+    key = 0.01
+    _ = pb.string(forType: .string); _ = pb.data(forType: .rtf); _ = pb.string(forType: .string)
+    check(q.pastes == 1 && q.next == 0, "one paste counted for several reads, the next item waits for them to stop")
+    settle()
+    check(q.next == 1 && pb.string(forType: .string) == "second line" && events.contains("paste0"), "then the second item takes its place")
+    // A copy while it waits joins the end; the clipboard still gives the queue's next item.
+    key = 100
+    q.add([ids[2]])
+    check(q.ids.count == 3 && pb.string(forType: .string) == "second line", "a new copy joins the end; the next item stays on top")
+    key = 0.01
+    _ = pb.string(forType: .string)
+    settle()
+    // The picture: promised as a file, a PNG and a TIFF made only when asked.
+    let tiff = pb.data(forType: .tiff), png = pb.data(forType: .png)
+    check(q.next == 2 && png != nil && tiff.flatMap { NSImage(data: $0) }?.size.width ?? 0 > 0 && pb.pasteboardItems?.first?.types.contains(.fileURL) == true,
+          "the picture: file, PNG and a TIFF made from it")
+    settle()
+    check(q.next == 3 && emptied == 1 && q.left == 0, "the last one pasted: the queue is empty (\(q.next), \(emptied))")
+    // Closing: what was last on the clipboard stays as ordinary data, no longer promised.
+    let count = pb.changeCount
+    q.close()
+    check(!q.isOpen && pb.changeCount != count && pb.pasteboardItems?.first?.types.contains(.fileURL) == true, "closed: the last item written out for real")
+    // Closed with items left: the next one stays on the clipboard.
+    q.open(); key = 100
+    q.add([ids[3], ids[0]])
+    q.close()
+    check(pb.string(forType: .string) == "last" && q.asks == 0, "closed early: the next item stays, as ordinary data (no ask)")
+    pb.releaseGlobally()
+    try? FileManager.default.removeItem(at: dir)
 }
 
 /// Dragging out: one file per picked thing, in pick order (0.4's recording: two items became one merged text file).

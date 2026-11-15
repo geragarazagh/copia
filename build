@@ -7,7 +7,7 @@
 set -e
 cd "${0:A:h}"
 # The version changes per release, not per build (dev/apps.md, «Version numbers»).
-name=Copia version=0.6 min=13.0
+name=Copia version=0.7 min=13.0
 id=com.geragaraza.${(L)name} app=$name.app
 tmp=$(mktemp -d); trap 'rm -rf $tmp' EXIT
 rm -rf "$app"
@@ -33,7 +33,7 @@ done
 
 # An explicit minimum: by default swiftc targets this Mac's macOS and every older system refuses the result.
 swiftc -O -target arm64-apple-macos$min -F vendor -framework Sparkle -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
-  -o "$app/Contents/MacOS/$name" main.swift updates.swift app.swift capture.swift model.swift store.swift copy.swift selection.swift panel.swift rows.swift text.swift motion.swift place.swift preview.swift menu.swift browser.swift views.swift settings.swift link.swift drag.swift
+  -o "$app/Contents/MacOS/$name" main.swift updates.swift app.swift capture.swift model.swift store.swift copy.swift selection.swift panel.swift rows.swift text.swift motion.swift place.swift preview.swift menu.swift browser.swift views.swift settings.swift link.swift drag.swift queue.swift shelf.swift
 
 # App icon, Apple's way (apps.md, «Icons»): the picture from icon.swift, the plate is the system's own fill, compiled
 # by Xcode's actool into Assets.car (macOS 26+ switch it with the theme) and AppIcon.icns (Apple's light rendition, 13-15).
@@ -77,7 +77,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>CFBundleIconName</key><string>AppIcon</string>
 <key>CFBundleDevelopmentRegion</key><string>en</string>
-<key>CFBundleLocalizations</key><array><string>en</string><string>ru</string><string>uk</string></array>
+<key>CFBundleLocalizations</key><array><string>en</string></array>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>$version</string>
 <key>CFBundleVersion</key><string>$version</string>
@@ -93,11 +93,9 @@ cat > "$app/Contents/Info.plist" <<PLIST
 </dict></plist>
 PLIST
 
-for l in ru uk; do
-  mkdir "$app/Contents/Resources/$l.lproj"
-  cp lang/$l.strings "$app/Contents/Resources/$l.lproj/Localizable.strings"
-done
-mkdir "$app/Contents/Resources/en.lproj"   # English is the text in the code
+# English only (dev/rules.md, section 3, his word 2026-11-15; 0.4-0.6 had ru and uk): the text is in the code, and
+# en.lproj alone makes the system's own parts (the app menu, Services, the share sheet) English too.
+mkdir "$app/Contents/Resources/en.lproj"
 cp LICENSE THIRD-PARTY-LICENSES.md "$app/Contents/Resources/"   # Sparkle's MIT license travels with it
 
 # Open at Login (dev/apps.md, «Open at Login»): an agent in the bundle passes --login; that copy only starts the app

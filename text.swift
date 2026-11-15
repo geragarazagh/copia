@@ -1,6 +1,8 @@
-// Words and numbers shown to people: the three languages (en, ru, uk), plural forms, sizes, times.
-// English is the key in the code; ru and uk come from lang/*.strings. macOS's own terms are copied from its .loctable
-// files (Search: AppKit Common.loctable; Paste from Other Apps: SecurityPrivacyExtension).
+// Words and numbers shown to people: plural forms, sizes, times. The interface is English only since 0.7 (dev/rules.md,
+// section 3, his word 2026-11-15: every word exact; 0.4-0.6 had ru and uk from lang/*.strings). L() stays the one door
+// for interface text, so a word can be found and checked in one place; with no table in the bundle it returns the
+// English key. macOS's own terms are copied from its English .loctable entries (Search: AppKit Common.loctable; Paste
+// from Other Apps: SecurityPrivacyExtension). Numbers and dates still follow the person's region.
 import AppKit
 
 /// The bundle that holds the lang tables: the app itself, or the built app when the tests render the panel.

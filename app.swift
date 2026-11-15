@@ -24,6 +24,7 @@ nonisolated(unsafe) var trialDown: (Int, NSPoint)?
 
 /// The Carbon hot key's callback is a C function: it reaches the app through this.
 nonisolated(unsafe) var hotKeyAction: (() -> Void)?
+nonisolated(unsafe) var queueKeyAction: (() -> Void)?
 
 /// Sparkle (updates.swift), set by main.swift; nil in the tests, which build without it.
 struct Updater { let start: () -> Void, check: () -> Void, opened: () -> Void }
@@ -31,14 +32,17 @@ nonisolated(unsafe) var updater: Updater?
 
 /// Started by a person (Finder, Spotlight, `open`): no login start, no background start, no test or trial flag.
 let openedByPerson = !CommandLine.arguments.contains { ["--background", "--login", "--trial", "--show", "--browser", "--data",
-                                                       "--quit-after", "--display"].contains($0) }
+                                                       "--quit-after", "--display", "--queue"].contains($0) }
 
 final class App: NSObject, NSApplicationDelegate {
     let store: Store
     let monitor = Monitor()
     var panel: PanelController!
     var browser: BrowserController!
+    var queue: PasteQueue!
+    var shelf: Shelf!
     private var hotKey: EventHotKeyRef?
+    private var queueHotKey: EventHotKeyRef?
     private var handlerInstalled = false
     private var lastOtherApp: String?
     private let prepQueue = DispatchQueue(label: "com.geragaraza.copia.prepare", qos: .utility)
@@ -59,6 +63,10 @@ final class App: NSObject, NSApplicationDelegate {
         Copia.cleanPasteFolder(store, all: true)
         store.purge()
         panel = PanelController(store: store, monitor: monitor)
+        queue = PasteQueue(store: store)
+        queue.monitor = monitor
+        shelf = Shelf(queue: queue, store: store)
+        panel.copied = { [weak self] ids in self?.queue.add(ids) }
         browser = BrowserController(store: store, monitor: monitor)
         browser.panelReload = { [weak self] in self?.panel.reload() }
         browser.onPlaceChange = { [weak self] p, s in self?.panel.setPlace(p, on: s) }
@@ -91,7 +99,8 @@ final class App: NSObject, NSApplicationDelegate {
             prepQueue.async {   // images become PNG files here, off the main thread
                 guard let (e, items) = prepare(snap, dir: dir) else { return }
                 DispatchQueue.main.async {
-                    self.store.add(e, items)
+                    let id = self.store.add(e, items)
+                    self.queue.add([id])
                     self.panel.reload()
                     if self.browser.isVisible { self.browser.reload() }
                 }
@@ -101,8 +110,19 @@ final class App: NSObject, NSApplicationDelegate {
         if trial { listenForTrialMouse() }
 
         hotKeyAction = { [weak self] in self?.panel.toggle() }
+        queueKeyAction = { [weak self] in self?.shelf.toggle() }
         if !trial { registerHotKey() }
         if CommandLine.arguments.contains("--show") { panel.show() }
+        // --queue: the paste queue open at launch; in a trial it also watches the clipboard (the agents' own session's
+        // clipboard, never his), so a trial copies and pastes for real. COPIA_TRIAL_KEYS=1, in a trial only: keys sent
+        // to a process from outside do not reach the session's «last key» clock, so every ask counts as a paste.
+        if CommandLine.arguments.contains("--queue") {
+            if trial {
+                monitor.start()
+                if ProcessInfo.processInfo.environment["COPIA_TRIAL_KEYS"] != nil { queue.sinceKey = { 0 } }
+            }
+            shelf.open()
+        }
         if let i = CommandLine.arguments.firstIndex(of: "--browser") {
             let p = i + 1 < CommandLine.arguments.count ? Pane(rawValue: CommandLine.arguments[i + 1]) : nil
             browser.show(p)
@@ -135,7 +155,10 @@ final class App: NSObject, NSApplicationDelegate {
 
     @objc func openSettings() { panel.hide(); browser.show(.settings) }
 
-    func applicationWillTerminate(_ n: Notification) { browser.saveLayout() }
+    func applicationWillTerminate(_ n: Notification) {
+        browser.saveLayout()
+        queue.close()   // a promise dies with the app: what waits on the clipboard is written out as ordinary data
+    }
 
     /// ⌥⌘C by default, his key (ClipBook's, used daily); set in Settings, kept in the database's settings. Carbon's
     /// RegisterEventHotKey needs no permission.
@@ -143,13 +166,20 @@ final class App: NSObject, NSApplicationDelegate {
     func registerHotKey() -> OSStatus {
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         // The handler once; the key itself may be registered again after a change in Settings.
-        if !handlerInstalled { handlerInstalled = true; InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
-            DispatchQueue.main.async { hotKeyAction?() }
+        if !handlerInstalled { handlerInstalled = true; InstallEventHandler(GetApplicationEventTarget(), { _, ev, _ in
+            var hk = EventHotKeyID()
+            GetEventParameter(ev, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil,
+                              MemoryLayout<EventHotKeyID>.size, nil, &hk)
+            let which = hk.id
+            DispatchQueue.main.async { (which == 2 ? queueKeyAction : hotKeyAction)?() }
             return noErr
         }, 1, &spec, nil, nil) }
-        let id = EventHotKeyID(signature: OSType(0x434C_4950), id: 1)   // 'CLIP'
+        // 1: the panel; 2: the paste queue.
+        let q = store.queueKey
+        RegisterEventHotKey(q.code, q.mods, EventHotKeyID(signature: OSType(0x434C_4950), id: 2), GetApplicationEventTarget(), 0, &queueHotKey)
         let k = store.hotKey
-        return RegisterEventHotKey(k.code, k.mods, id, GetApplicationEventTarget(), 0, &hotKey)
+        return RegisterEventHotKey(k.code, k.mods, EventHotKeyID(signature: OSType(0x434C_4950), id: 1), GetApplicationEventTarget(), 0, &hotKey)   // 'CLIP'
+
     }
 
     /// Trials in the agents' own login session (cs): mouse events posted to a process from outside are not routed to
@@ -203,7 +233,10 @@ final class App: NSObject, NSApplicationDelegate {
         }
     }
 
-    func unregisterHotKey() { if let h = hotKey { UnregisterEventHotKey(h); hotKey = nil } }
+    func unregisterHotKey() {
+        if let h = hotKey { UnregisterEventHotKey(h); hotKey = nil }
+        if let h = queueHotKey { UnregisterEventHotKey(h); queueHotKey = nil }
+    }
 }
 
 /// The letter of a ⌘ shortcut whatever the keyboard layout. With a Cyrillic layout charactersIgnoringModifiers of

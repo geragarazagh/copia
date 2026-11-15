@@ -161,10 +161,17 @@ final class Store {
 
     /// Newest first.
     func entries(deleted: Bool = false) -> [Entry] {
+        entries(where: "deleted IS \(deleted ? "NOT NULL" : "NULL")", [])
+    }
+
+    /// One entry, deleted or not (the paste queue holds ids).
+    func entry(_ id: Int64) -> Entry? { entries(where: "id = ?", [id]).first }
+
+    private func entries(where w: String, _ args: [Any?]) -> [Entry] {
         query("""
             SELECT id, copied, app, kind, title, text, bytes, count, width, height, thumb, digest, deleted, concealed, url, picture, ckey
-            FROM entries WHERE deleted IS \(deleted ? "NOT NULL" : "NULL") ORDER BY copied DESC, id DESC
-            """, []) { s in
+            FROM entries WHERE \(w) ORDER BY copied DESC, id DESC
+            """, args) { s in
             Entry(id: int(s, 0), copied: Date(timeIntervalSince1970: sqlite3_column_double(s, 1)), app: text(s, 2),
                   kind: Kind(rawValue: text(s, 3) ?? "") ?? .other, title: text(s, 4) ?? "", text: text(s, 5) ?? "",
                   bytes: Int(int(s, 6)), count: Int(int(s, 7)), width: Int(int(s, 8)), height: Int(int(s, 9)),
