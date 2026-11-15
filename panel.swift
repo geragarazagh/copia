@@ -371,6 +371,7 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     /// (paste.swift). Plain: their plain text alone. A paste puts exactly the picks in, so it goes past an open paste
     /// queue, whose next item comes back on the clipboard after it (PasteQueue.resume).
     func pasteSelection(plain: Bool) {
+        guard !hiding else { return }   // a second Return while the panel leaves pastes nothing twice (security pass 2026-11-15)
         if sel.isEmpty, let first = shown.first { sel.click(first.id); selectionChanged() }
         let picked = sel.order.compactMap(entry)
         guard !picked.isEmpty else { return }
@@ -388,6 +389,7 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
 
     /// Quick Pick: the Nth row in sight (the numbers shown while its modifier is held), pasted as Return pastes.
     func quickPick(_ n: Int, plain: Bool) {
+        guard !hiding else { return }
         let ids = visibleEntryIDs()
         guard n < ids.count else { return }
         sel.clear(); sel.click(ids[n]); selectionChanged()

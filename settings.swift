@@ -213,6 +213,13 @@ final class SettingsView: FlippedLayout {
         }
         pickPop.selectItem(at: PickMod.allCases.firstIndex(of: k.pick) ?? 0)
         access.allowed = Paster().allowed()
+        // Turned on since Copia started: only a fresh copy of Copia can tell (paste.swift).
+        if !access.allowed && !trialDeny {
+            DispatchQueue.global(qos: .utility).async {
+                guard Paster.runFresh(pid: 0) else { return }
+                DispatchQueue.main.async { [weak self] in Paster.allowedFresh = true; self?.access.allowed = true }
+            }
+        }
         let clashes = keyClashes(show: o.store.hotKey, queue: o.store.queueKey, keys: k)
         warning.stringValue = clashes.joined(separator: "\n")
         warning.isHidden = clashes.isEmpty

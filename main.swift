@@ -20,6 +20,10 @@ import ServiceManagement
 let args = CommandLine.arguments
 func arg(_ name: String) -> String? { args.firstIndex(of: name).flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil } }
 
+// --paste-to PID: a fresh copy that sends one ⌘V for Copia when Copia started before its Accessibility grant
+// (paste.swift). It does nothing else and quits.
+if let i = args.firstIndex(of: "--paste-to") { exit(Paster.freshCopy(args[(i + 1)...])) }
+
 // Open at Login: launchd starts this copy with --login; it starts the app through `open -g … --background` and exits,
 // because launchd kills what it started when the agent is unregistered (dev/apps.md, «Open at Login»).
 if args.contains("--login") {

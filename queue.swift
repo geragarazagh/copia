@@ -68,7 +68,8 @@ final class PasteQueue: NSObject {
 
     /// The key that types «v» with ⌘ in the person's layout (⌘ shortcuts use the ASCII-capable layout: Russian keeps
     /// the US key, Dvorak moves it); traced beside ⌘ to see whether ⌘ alone ever reads as a paste that was not one.
-    static let vKey: CGKeyCode = {
+    /// Read at each use: the layout may change while Copia runs (security pass 2026-11-15).
+    static var vKey: CGKeyCode {
         guard let src = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue(),
               let ptr = TISGetInputSourceProperty(src, kTISPropertyUnicodeKeyLayoutData) else { return 9 }
         let data = Unmanaged<CFData>.fromOpaque(ptr).takeUnretainedValue() as Data
@@ -83,7 +84,7 @@ final class PasteQueue: NSObject {
             }
             return 9
         }
-    }()
+    }
 
     init(store: Store, pasteboard: NSPasteboard = .general) {
         self.store = store
@@ -159,6 +160,9 @@ final class PasteQueue: NSObject {
             let n = NSPasteboardItem()
             n.setString("1", forType: .own)
             n.setString(Bundle.main.bundleIdentifier ?? "com.geragaraza.copia", forType: .source)
+            // nspasteboard.org's transient marker: clipboard tools that follow it skip the item instead of reading it,
+            // which would count as a paste while ⌘ is held (security pass 2026-11-15).
+            n.setString("", forType: .transient)
             n.setDataProvider(d, forTypes: Array(d.data.keys) + (d.tiffFromPNG ? [.tiff] : []))
             out.append(n); keep.append(d)
         }
@@ -190,7 +194,12 @@ final class PasteQueue: NSObject {
             // later, 50 ms doubling to 5 s (Clipbara's backoff), so the two never spin. The first renewal is as quick as
             // the settle: a ⌘V soon after such a read must find the item promised again.
             if renewTimer == nil {
-                let t = Timer(timeInterval: renewAfter, repeats: false) { [weak self] _ in self?.renewTimer = nil; self?.place() }
+                let t = Timer(timeInterval: renewAfter, repeats: false) { [weak self] _ in
+                    guard let self else { return }
+                    self.renewTimer = nil
+                    // A copy made since (not yet read by the monitor) stays: it joins the queue at the next poll.
+                    if self.pb.changeCount == self.placedCount { self.place() }
+                }
                 RunLoop.main.add(t, forMode: .common)
                 renewTimer = t
                 renewAfter = min(5, renewAfter * 2)

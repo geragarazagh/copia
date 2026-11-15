@@ -5,11 +5,19 @@ import AppKit
 import Carbon.HIToolbox
 
 /// Trial flags (main.swift lists them): here, since the tests build every file but main.swift.
+#if TRIALS
 let trial = CommandLine.arguments.contains("--trial")
+#else
+/// A release (signed with a Developer ID) has no trial switches: --trial's mouse FIFO would let any program click
+/// Copia's Paste (security pass 2026-11-15). `build` sets TRIALS only for a build signed ad hoc, `test` always.
+let trial = false
+#endif
 let trialDisplay: UInt32? = CommandLine.arguments.firstIndex(of: "--display").flatMap {
     $0 + 1 < CommandLine.arguments.count ? UInt32(CommandLine.arguments[$0 + 1]) : nil }
 
 /// COPIA_TRACE=1: every key and click a window of the app gets, on stderr (trials).
+/// COPIA_TRIAL_DENY=1 in a trial: as if pasting were not allowed (paste.swift).
+let trialDeny = trial && ProcessInfo.processInfo.environment["COPIA_TRIAL_DENY"] != nil
 let traceEvents = ProcessInfo.processInfo.environment["COPIA_TRACE"] != nil
 
 /// The screen of the trial display, when one is given.
@@ -195,7 +203,7 @@ final class App: NSObject, NSApplicationDelegate {
             // been answered before it shows nothing, so the list itself opens.
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                 let asking = NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == "com.apple.accessibility.universalAccessAuthWarn" }
-                if !asking && !CGPreflightPostEventAccess() { Paster.openAccessibilitySettings() }
+                if !asking && !Paster.allowedHere() { Paster.openAccessibilitySettings() }
             }
         }
     }

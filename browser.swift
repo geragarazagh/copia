@@ -410,14 +410,15 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
 
     /// The item menu's Paste: the picks in one write, then ⌘V into the app that was in front before this window (it
     /// comes forward; this window stays). As the panel's, it goes past an open paste queue.
-    @objc func paste(_ sender: Any?) {
+    /// Not named paste(_:): that is Edit > Paste (⌘V), which reached this window and pasted into another app.
+    @objc func pasteIntoApp(_ sender: Any?) {
         guard pane != .deleted, !order.isEmpty else { return }
         let own = Copia.write(picked.map { ($0, store.reps($0.id)) }, store: store, to: pasteboard).count; monitor?.ownCount = own
         used()
         pasteInto()
     }
 
-    @objc func pastePlain(_ sender: Any?) {
+    @objc func pastePlainIntoApp(_ sender: Any?) {
         let t = Copia.plainText(picked)
         guard pane != .deleted, !t.isEmpty else { return }
         let own = Copia.writePlain(t, to: pasteboard); monitor?.ownCount = own
@@ -666,7 +667,7 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
         return makeItemMenu(picked, target: self, verbs: Self.verbs, keys: store.keys, openWith: openWithMenu())
     }
 
-    static let verbs = ItemVerbs(paste: #selector(paste(_:)), pastePlain: #selector(pastePlain(_:)), copy: #selector(copy(_:)),
+    static let verbs = ItemVerbs(paste: #selector(pasteIntoApp(_:)), pastePlain: #selector(pastePlainIntoApp(_:)), copy: #selector(copy(_:)),
                                  copyPlain: #selector(copyAsPlainText(_:)), share: #selector(shareFromMenu(_:)),
                                  openInBrowser: #selector(openInBrowserFromMenu(_:)), showInFinder: #selector(showInFinderFromMenu(_:)),
                                  delete: #selector(moveToRecentlyDeleted(_:)))

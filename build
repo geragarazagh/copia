@@ -32,7 +32,9 @@ for b in Sparkle Autoupdate Updater.app/Contents/MacOS/Updater; do
 done
 
 # An explicit minimum: by default swiftc targets this Mac's macOS and every older system refuses the result.
-swiftc -O -target arm64-apple-macos$min -F vendor -framework Sparkle -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
+# Trial switches (--trial, its mouse FIFO, COPIA_TRIAL_*) only in a build signed ad hoc, never in a release (app.swift).
+[ "${SIGN_ID:--}" = - ] && trials=(-D TRIALS) || trials=()
+swiftc -O -target arm64-apple-macos$min $trials -F vendor -framework Sparkle -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
   -o "$app/Contents/MacOS/$name" main.swift updates.swift app.swift capture.swift model.swift store.swift copy.swift selection.swift panel.swift rows.swift text.swift motion.swift place.swift preview.swift menu.swift browser.swift views.swift settings.swift link.swift drag.swift queue.swift shelf.swift deck.swift keys.swift paste.swift
 
 # App icon, Apple's way (apps.md, «Icons»): the picture from icon.swift, the plate is the system's own fill, compiled

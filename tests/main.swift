@@ -749,9 +749,20 @@ func keysTests() {
     // The paster: without the permission, the explanation, no keys.
     let p = Paster()
     var denied = 0, posted = 0
-    p.allowed = { false }; p.denied = { denied += 1 }; p.post = { _ in posted += 1 }
-    p.paste(into: NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first)
+    let dock = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first
+    p.allowed = { false }; p.fresh = { false }; p.denied = { denied += 1 }; p.post = { _ in posted += 1 }
+    p.paste(into: dock)
+    _ = wait(1) { denied == 1 }
     check(denied == 1 && posted == 0, "no Accessibility: explained, nothing sent")
+    // Turned on while Copia runs: Copia's own answer stays no, a fresh copy says yes, and the paste goes on.
+    // (the app already in front, so nothing is brought forward; the post is counted, not sent)
+    p.fresh = { true }
+    p.paste(into: NSWorkspace.shared.frontmostApplication)
+    _ = wait(2) { posted == 1 }
+    check(denied == 1 && (posted == 1 || NSWorkspace.shared.frontmostApplication == .current) && Paster.allowedFresh, "granted after launch: the fresh copy's yes, the ⌘V sent")
+    Paster.allowedFresh = false; posted = 0
+    check(Paster.freshCopy(["0", "1"]) == 2 && Paster.freshCopy(["x"]) == 2 && Paster.freshCopy(["-5"]) == 2 && Paster.freshCopy([]) == 2,
+          "--paste-to takes one process number, nothing else")
     p.allowed = { true }
     p.paste(into: .current); p.paste(into: nil)
     _ = wait(0.2) { false }
