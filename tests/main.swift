@@ -1217,8 +1217,8 @@ func shelfOnScreen() {
     let pb = NSPasteboard(name: .init("com.geragaraza.copia.test.shelf.\(getpid())"))
     let q = PasteQueue(store: st, pasteboard: pb)
     q.sinceKey = { 0.01 }
-    let sh = Shelf(queue: q, store: st, kind: .panel)
-    let pc = sh.panel!
+    let sh = Shelf(queue: q, store: st)
+    let pc = sh.panel
     sh.open(); _ = wait(0.3) { false }
     check(pc.window!.isVisible && !pc.window!.isKeyWindow && !pc.window!.canBecomeKey,
           "the shelf shows and takes no keyboard (visible \(pc.window!.isVisible), key \(pc.window!.isKeyWindow))")
@@ -1286,14 +1286,27 @@ func panelOnScreen() {
     check(pc.shown.isEmpty && st.entries(deleted: true).count == 17, "⌫ in the list deletes the picks (into Recently Deleted)")
     press("z", 6, .command)
     check(pc.shown.count == 17, "⌘Z brings them back")
+    // His recording 2026-11-15 09:27: with the caret in the (empty) search, a click on a row gives the list the keys.
+    press("f", 3, .command)
+    let r1 = pc.rows.firstIndex { if case .entry = $0 { return true }; return false } ?? 0
+    pc.mouseDown(row: r1, flags: [], clicks: 1); pc.mouseUp()
+    check(!pc.searching && pc.focused && pc.sel.count == 1,
+          "a click in the list while searching: the list has the keys, the row in the accent (searching \(pc.searching), focused \(pc.focused), picks \(pc.sel.count))")
     press("f", 3, .command)
     pc.window!.fieldEditor(false, for: pc.view.field)?.insertText("pageB")
     _ = wait(0.1) { false }
     check(pc.query == "pageB" || pc.shown.count < 17, "typing after ⌘F searches (\(pc.query))")
     press("\u{1b}", 53)
-    check(pc.query.isEmpty && !pc.searching && pc.isVisible, "Esc: the search cleared, the list has the keys, still open")
+    check(pc.query.isEmpty && !pc.searching && pc.sel.isEmpty && pc.isVisible, "Esc: search and picks cleared, as on opening, still open")
     press("\u{1b}", 53); _ = wait(0.3) { !pc.isVisible }
     check(!pc.isVisible, "Esc again: gone")
+    // Picks without a search: the first Esc drops them (Spotlight's empty state), the second closes.
+    pc.show(); _ = wait(0.2) { false }
+    press("\u{F701}", 125)
+    press("\u{1b}", 53)
+    check(pc.isVisible && pc.sel.isEmpty, "Esc with a row picked: the pick goes, the panel stays")
+    press("\u{1b}", 53); _ = wait(0.3) { !pc.isVisible }
+    check(!pc.isVisible, "then Esc closes")
     pc.show(); _ = wait(0.2) { false }
     press("\r", 36); _ = wait(0.3) { !pc.isVisible }
     check(!pc.isVisible && (pb.pasteboardItems?.count ?? 0) >= 1, "Return with nothing picked copies the first row, as Spotlight's top hit")

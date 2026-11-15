@@ -425,6 +425,9 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
 
     func mouseDown(row: Int, flags: NSEvent.ModifierFlags, clicks: Int) {
         guard queue == nil, row >= 0, row < rows.count, case .entry(let i) = rows[row] else { return }
+        // A click in the list gives it the keys, the query staying (Finder's way): 0.6 picked the row in grey and left
+        // the caret blinking in the search, with no way back to the list but ↓ (his recording 2026-11-15 09:27).
+        if searching { window?.makeFirstResponder(view) }
         let id = shown[i].id
         if clicks >= 2 {
             pending = nil
@@ -656,12 +659,15 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         selectionChanged()
     }
 
-    /// Esc, step by step back: the preview closes; a search is cleared and the list takes the keys again; the panel goes.
+    /// Esc, step by step back, as Spotlight's (his recording 2026-11-15 09:27: Spotlight's first Esc returns to its empty
+    /// state, the second closes it; 0.6 closed at once with rows picked): the preview closes; then the search and the
+    /// picks are cleared together and the list has the keys, as on opening; then the panel goes.
     func escape() {
         if preview.isOpen { closePreview(); return }
-        if !query.isEmpty || searching {
+        if !query.isEmpty || searching || !sel.isEmpty {
             let had = !query.isEmpty
             view.field.stringValue = ""
+            sel.clear(); pending = nil
             window?.makeFirstResponder(view)
             if had { filter() }
             selectionChanged()
