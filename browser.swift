@@ -421,7 +421,7 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
     @objc func pastePlainIntoApp(_ sender: Any?) {
         let t = Copia.plainText(picked)
         guard pane != .deleted, !t.isEmpty else { return }
-        let own = Copia.writePlain(t, to: pasteboard); monitor?.ownCount = own
+        let own = Copia.writePlain(t, concealed: picked.contains(where: \.concealed), to: pasteboard); monitor?.ownCount = own
         used()
         pasteInto()
     }
@@ -475,7 +475,7 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
     @objc func copyAsPlainText(_ sender: Any?) {
         let t = Copia.plainText(picked)
         guard !t.isEmpty else { return }
-        let own = Copia.writePlain(t, to: pasteboard); monitor?.ownCount = own
+        let own = Copia.writePlain(t, concealed: picked.contains(where: \.concealed), to: pasteboard); monitor?.ownCount = own
         copied(order, true)
         used()
     }

@@ -42,6 +42,9 @@ struct HotKey: Equatable {
         if f.contains(.shift) { m |= UInt32(shiftKey) }
         // A global key needs ⌘, ⌥ or ⌃: a plain letter would be taken from every app.
         guard m & UInt32(cmdKey | optionKey | controlKey) != 0 else { return nil }
+        // ⌘ alone would take an app's own command from every app (⌘V, ⌘C, ⌘Q): with ⇧, ⌥ or ⌃ it is a global key
+        // (security pass 2026-11-15).
+        guard m != UInt32(cmdKey) else { return nil }
         return HotKey(code: UInt32(e.keyCode), mods: m)
     }
 }

@@ -106,7 +106,7 @@ final class PasteQueue: NSObject {
         renewTimer?.invalidate(); renewTimer = nil
         renewAfter = 0.05
         if pb.changeCount == placedCount, let i = nextIndex ?? last, let e = store.entry(ids[i]) {
-            if plainAt.contains(i) { let own = Copia.writePlain(Copia.plainText([e]), to: pb); monitor?.ownCount = own }
+            if plainAt.contains(i) { let own = Copia.writePlain(Copia.plainText([e]), concealed: e.concealed, to: pb); monitor?.ownCount = own }
             else { let own = Copia.write([(e, store.reps(ids[i]))], store: store, to: pb).count; monitor?.ownCount = own }
         }
         isOpen = false
@@ -144,6 +144,7 @@ final class PasteQueue: NSObject {
         if plainAt.contains(i) {
             let it = NSPasteboardItem()
             it.setString(Copia.plainText([e]), forType: .string)
+            if e.concealed { it.setString("", forType: .concealed) }
             items = [it]
         } else {
             items = Copia.items([(e, store.reps(ids[i]))], store: store, providers: &tiffs)
@@ -153,7 +154,7 @@ final class PasteQueue: NSObject {
         for it in items {
             let d = QueueItemData(queue: self)
             let hasPNG = it.types.contains(.png)
-            for t in it.types where t != .own && t != .source {
+            for t in it.types where t != .own && t != .source && t != .concealed {
                 if t == .tiff && hasPNG { d.tiffFromPNG = true; continue }   // made only when asked, as Copia.items does
                 if let v = it.data(forType: t) { d.data[t] = v }
             }
@@ -163,6 +164,7 @@ final class PasteQueue: NSObject {
             // nspasteboard.org's transient marker: clipboard tools that follow it skip the item instead of reading it,
             // which would count as a paste while ⌘ is held (security pass 2026-11-15).
             n.setString("", forType: .transient)
+            if it.types.contains(.concealed) { n.setString("", forType: .concealed) }
             n.setDataProvider(d, forTypes: Array(d.data.keys) + (d.tiffFromPNG ? [.tiff] : []))
             out.append(n); keep.append(d)
         }

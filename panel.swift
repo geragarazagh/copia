@@ -378,7 +378,7 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         if plain {
             let t = Copia.plainText(picked)
             guard !t.isEmpty else { return }
-            let own = Copia.writePlain(t, to: pasteboard); monitor?.ownCount = own
+            let own = Copia.writePlain(t, concealed: picked.contains(where: \.concealed), to: pasteboard); monitor?.ownCount = own
         } else {
             let own = Copia.write(picked.map { ($0, store.reps($0.id)) }, store: store, to: pasteboard).count; monitor?.ownCount = own
         }

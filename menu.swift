@@ -97,9 +97,10 @@ extension PanelController: NSMenuDelegate {
     /// queue as plain text, as any copy joins it.
     @objc func menuCopyPlain() {
         let picked = sel.order
-        let t = Copia.plainText(picked.compactMap(entry))
+        let es = picked.compactMap(entry)
+        let t = Copia.plainText(es)
         guard !t.isEmpty else { return }
-        let own = Copia.writePlain(t, to: pasteboard); monitor?.ownCount = own
+        let own = Copia.writePlain(t, concealed: es.contains(where: \.concealed), to: pasteboard); monitor?.ownCount = own
         used(picked)
         copied(picked, true)
         hide()

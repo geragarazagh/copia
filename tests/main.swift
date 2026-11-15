@@ -761,6 +761,16 @@ func keysTests() {
     _ = wait(2) { posted == 1 }
     check(denied == 1 && (posted == 1 || NSWorkspace.shared.frontmostApplication == .current) && Paster.allowedFresh, "granted after launch: the fresh copy's yes, the ⌘V sent")
     Paster.allowedFresh = false; posted = 0
+    // A password's plain text keeps the concealed mark; a global key of ⌘ alone is refused, ⇧⌘ taken.
+    let cpb = NSPasteboard(name: .init("com.geragaraza.copia.test.conceal\(getpid())"))
+    Copia.writePlain("secret", concealed: true, to: cpb)
+    let concealedKept = cpb.types?.contains(.concealed) == true
+    Copia.writePlain("plain", to: cpb)
+    check(concealedKept && cpb.types?.contains(.concealed) == false, "concealed copies stay marked, others not")
+    cpb.releaseGlobally()
+    func ev(_ f: NSEvent.ModifierFlags) -> NSEvent { NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: f, timestamp: 0, windowNumber: 0, context: nil, characters: "v", charactersIgnoringModifiers: "v", isARepeat: false, keyCode: 9)! }
+    check(HotKey.from(ev(.command)) == nil && HotKey.from(ev([.command, .shift])) != nil && HotKey.from(ev([.control, .option])) != nil,
+          "global keys: ⌘V refused, ⇧⌘V and ⌃⌥V taken")
     check(Paster.freshCopy(["0", "1"]) == 2 && Paster.freshCopy(["x"]) == 2 && Paster.freshCopy(["-5"]) == 2 && Paster.freshCopy([]) == 2,
           "--paste-to takes one process number, nothing else")
     p.allowed = { true }

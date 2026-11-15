@@ -66,7 +66,11 @@ enum Copia {
                 }
             }
         }
+        // A password manager's copy goes back marked as it came (nspasteboard.org's concealed marker, which capture
+        // keeps in the entry, not as a stored type), so other clipboard tools skip it (security pass 2026-11-15).
+        let concealed = sel.contains { $0.0.concealed }
         for it in out {
+            if concealed { it.setString("", forType: .concealed) }
             it.setString("1", forType: .own)   // inside the same item: a marker item of its own would paste as an extra
             it.setString(Bundle.main.bundleIdentifier ?? "com.geragaraza.copia", forType: .source)
         }
@@ -81,14 +85,20 @@ enum Copia {
 
     /// Plain text in one write, marked as Copia's own; returns the pasteboard's count after it (the monitor skips it).
     @discardableResult
-    static func writePlain(_ t: String, to pb: NSPasteboard = .general) -> Int {
-        pb.clearContents()
+    static func writePlain(_ t: String, concealed: Bool = false, to pb: NSPasteboard = .general) -> Int {
+        clear(pb, concealed: concealed)
         let it = NSPasteboardItem()
         it.setString(t, forType: .string)
+        if concealed { it.setString("", forType: .concealed) }
         it.setString("1", forType: .own)
         it.setString(Bundle.main.bundleIdentifier ?? "com.geragaraza.copia", forType: .source)
         pb.writeObjects([it])
         return pb.changeCount
+    }
+
+    /// A new write; a concealed one stays on this Mac (Universal Clipboard would carry a password to the iPhone).
+    static func clear(_ pb: NSPasteboard, concealed: Bool) {
+        if concealed { pb.prepareForNewContents(with: .currentHostOnly) } else { pb.clearContents() }
     }
 
     static func isImage(_ reps: [Rep]) -> Bool {
@@ -106,7 +116,7 @@ enum Copia {
             var providers: [TIFFProvider] = []
             let items = items(sel, store: store, providers: &providers)
             expected = items.filter { $0.types.contains(.fileURL) }.count
-            pb.clearContents()
+            clear(pb, concealed: sel.contains { $0.0.concealed })
             pb.writeObjects(items)
             TIFFProvider.live = providers
             got = (pb.pasteboardItems ?? []).filter { $0.types.contains(.fileURL) }.count
