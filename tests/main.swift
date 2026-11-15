@@ -186,7 +186,15 @@ func unit() {
     pc.deleteSelection()
     check(pc.shown.count == 4 && pc.sel.order == [shown0[2]], "⌘⌫: gone, the next row takes the selection \(pc.sel.order)")
     check(ds.entries(deleted: true).count == 2, "⌘⌫ goes to Recently Deleted")
+    appUndo.removeAllActions()
     check(pc.undoDelete() && pc.shown.map(\.id) == shown0 && pc.sel.order == picked, "⌘Z: back in place, picked as before")
+    // One undo for the app (appUndo): a panel deletion comes back through the undo the big window's Edit menu uses.
+    pc.sel.clear(); pc.mouseDown(row: 2, flags: [], clicks: 1)
+    pc.deleteSelection()
+    _ = wait(0.05) { false }   // the undo group closes at the end of the run loop's turn, as after a key press
+    check(appUndo.canUndo && ds.entries(deleted: true).count == 1, "a panel deletion is on the app's undo (\(appUndo.canUndo), \(ds.entries(deleted: true).count), picks \(pc.sel.order.count))")
+    appUndo.undo()
+    check(ds.entries(deleted: true).isEmpty && pc.shown.map(\.id) == shown0, "undone from the app's undo: back")
     pc.sel.clear(); pc.selectAll(); check(pc.sel.order == did, "⌘A in copy order")
     check(pc.listChange(["h", "a", "b", "c"], ["h", "c"]) == .removed([1, 2]) && pc.listChange(["h", "c"], ["h", "a", "b", "c"]) == .inserted([1, 2])
           && pc.listChange(["a", "b"], ["b", "a"]) == nil, "a deletion and its undo are told apart from any other change (animated)")

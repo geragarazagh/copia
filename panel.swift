@@ -29,6 +29,11 @@ let rowPicture: CGFloat = 36
 
 final class Flipped: NSView { override var isFlipped: Bool { true } }
 
+/// One undo for the whole app, as Finder's: a deletion made in the panel comes back with ⌘Z in the big window and the
+/// other way round (his recording 2026-11-15 10:33: ⌘A ⌘⌫ in the panel, then ⌘, and ⌘Z in the big window brought
+/// nothing back; until 0.7 each kept its own).
+let appUndo = UndoManager()
+
 func fold(_ s: String) -> ContiguousArray<UInt8> {
     ContiguousArray(s.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil).utf8)
 }
@@ -334,6 +339,8 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         let list = shown.map(\.id)
         let first = list.firstIndex { ids.contains($0) } ?? 0
         undo.append((ids, sel))
+        appUndo.registerUndo(withTarget: self) { _ = $0.undoDelete() }
+        appUndo.setActionName(L("Delete"))
         store.delete(ids)
         animateNext = true
         reload()
@@ -450,7 +457,7 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         switch (key, mods) {
         case ("c", [.command]): copySelection()
         case ("a", [.command]): selectAll()
-        case ("z", [.command]): _ = undoDelete()
+        case ("z", [.command]): if appUndo.canUndo { appUndo.undo() }
         case ("v", [.command]): focusSearch(); (window?.fieldEditor(false, for: view.field) as? NSTextView)?.paste(nil)
         case (_, [.command]) where e.keyCode == 51: deleteSelection()   // ⌘⌫
         default: return false

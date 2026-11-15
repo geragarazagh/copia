@@ -114,6 +114,9 @@ func appName(_ id: String?) -> String {
 // MARK: the controller
 
 final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation {
+    /// The app's one undo (panel.swift, appUndo): Edit > Undo here also takes back what the panel deleted.
+    func windowWillReturnUndoManager(_ window: NSWindow) -> UndoManager? { appUndo }
+
     let store: Store
     weak var monitor: Monitor?
     /// Re-registers the hot key after it is changed in Settings.
@@ -164,8 +167,7 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                 self.thumbRedraw = false
                 guard self.isVisible else { return }
-                self.content.items?.reload()
-                self.content.items?.select(Set(self.order))
+                if self.content.items?.redrawPictures() == true { self.content.items?.select(Set(self.order)) }
             }
         }
     }
@@ -256,15 +258,15 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
     /// The window's first size and its smallest, computed from what it shows rather than picked (his review of 0.4:
     /// 0.4 opened at 1100 × 680 with a fixed 620 × 380 minimum; HIG, Windows: «choose an initial size that minimizes
     /// empty areas», and a minimum where nothing overlaps). Default: the sidebar and five columns of icons, three rows
-    /// under a day's title (his pick of 0.5's variants, ~19:05). Smallest: three columns, two rows, and room for the
-    /// toolbar so the title is never cut.
+    /// under a day's title (his pick of 0.5's variants, ~19:05). Smallest: five columns too, two rows (his recording
+    /// 2026-11-15 10:33: at three or four the toolbar's search shrank to a button; 0.5-0.7 allowed three).
     func windowSizes() -> (NSSize, NSSize) {
         let n = 5
         let side = Self.sidebarWidth + 1
         let rowH = IconItem.size(side: iconSize).height, lines: CGFloat = 12
         let chrome: CGFloat = 52 + ContentController.statusH + 34 + 8 + 16   // toolbar, status bar, a day's title, insets
         let def = NSSize(width: side + IconsView.width(columns: n, iconSize: iconSize), height: chrome + 3 * rowH + 2 * lines)
-        let min = NSSize(width: side + max(IconsView.width(columns: 3, iconSize: iconSize), Self.toolbarMinimum),
+        let min = NSSize(width: side + max(IconsView.width(columns: n, iconSize: iconSize), Self.toolbarMinimum),
                          height: chrome + 2 * rowH + lines)
         return (def, min)
     }

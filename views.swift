@@ -20,8 +20,14 @@ protocol ItemsView: AnyObject {
     func anchorView(for id: Int64?) -> NSView?
     /// The window changed size: a grid lays itself out again.
     func didResize()
+    /// Quick Look's pictures of files arrived: the items on screen take them. True when the view had to reload whole
+    /// (the caller then picks the selection again).
+    func redrawPictures() -> Bool
 }
-extension ItemsView { func didResize() {} }
+extension ItemsView {
+    func didResize() {}
+    func redrawPictures() -> Bool { reload(); return true }
+}
 
 // MARK: sidebar
 
@@ -212,6 +218,14 @@ final class IconsView: NSObject, ItemsView, NSCollectionViewDataSource, NSCollec
 
     var root: NSView { scroll }
     var keyView: NSView { grid }
+
+    /// Only the pictures of the items on screen change: a reload while Quick Look's pictures came in every 0.2 s ate
+    /// the clicks of the first seconds in a pane of many files (his recording 2026-11-15 10:33, Recently Deleted).
+    func redrawPictures() -> Bool {
+        guard let st = owner?.store else { return false }
+        for case let it as IconItem in grid.visibleItems() { it.redrawPicture(store: st) }
+        return false
+    }
 
     init(owner: BrowserController) {
         self.owner = owner
@@ -455,7 +469,12 @@ final class IconItem: NSCollectionViewItem {
         view = v
     }
 
+    private(set) var entry: Entry?
+    func redrawPicture(store: Store) {
+        if let e = entry { picture.image = Thumbs.shared.thumb(e, store: store, side: (side / 16).rounded(.up) * 16) }
+    }
     func show(_ e: Entry, store: Store, side s: CGFloat, deleted: Bool) {
+        entry = e
         side = s
         picture.image = Thumbs.shared.thumb(e, store: store, side: (s / 16).rounded(.up) * 16)
         name.stringValue = shownTitle(e)
