@@ -1,29 +1,29 @@
-// Where the panel rests: one of three places on each screen, chosen by the person (his pick 2026-11-14 10:13: top,
-// middle and bottom are one interface, not variants; never at the pointer, a side or anywhere random). The middle is
-// the default, his «посередине». Each is computed from the screen's visible frame (what the menu bar and the Dock
-// leave), so a 13-inch Air and a 16-inch Pro each get their own middle.
+// Where the panel rests: nine places on each screen since 0.7 (his word 2026-11-15: the four corners, the middle of each
+// edge and the centre; 0.5-0.6 had seven, with no middle left or right; 0.4 three), chosen by the person (his pick
+// 2026-11-14 10:13: one interface, not variants; never at the pointer or anywhere random). Each is computed from the
+// screen's visible frame (what the menu bar and the Dock leave), so a 13-inch Air and a 16-inch Pro each get their own.
 import AppKit
 
 enum Place: String, CaseIterable {
     // Raw values of 0.4's three places kept, so a place chosen then still holds.
-    case topLeft, top, topRight, middle, bottomLeft, bottom, bottomRight
+    case topLeft, top, topRight, middleLeft, middle, middleRight, bottomLeft, bottom, bottomRight
 
     enum Row: Int { case top, middle, bottom }
     enum Column: Int { case left, centre, right }
     var row: Row {
-        switch self { case .topLeft, .top, .topRight: .top; case .middle: .middle; case .bottomLeft, .bottom, .bottomRight: .bottom }
+        switch self {
+        case .topLeft, .top, .topRight: .top; case .middleLeft, .middle, .middleRight: .middle
+        case .bottomLeft, .bottom, .bottomRight: .bottom
+        }
     }
     var column: Column {
-        switch self { case .topLeft, .bottomLeft: .left; case .topRight, .bottomRight: .right; default: .centre }
+        switch self { case .topLeft, .middleLeft, .bottomLeft: .left; case .topRight, .middleRight, .bottomRight: .right; default: .centre }
     }
-    /// The middle row has the centre only: a panel half off to one side in the middle of the screen is no place (his
-    /// list, 2026-11-14: top left, top centre, top right, centre, bottom left, bottom centre, bottom right).
-    static func at(_ r: Row, _ c: Column) -> Place? {
+    static func at(_ r: Row, _ c: Column) -> Place {
         switch (r, c) {
         case (.top, .left): .topLeft; case (.top, .centre): .top; case (.top, .right): .topRight
-        case (.middle, .centre): .middle
+        case (.middle, .left): .middleLeft; case (.middle, .centre): .middle; case (.middle, .right): .middleRight
         case (.bottom, .left): .bottomLeft; case (.bottom, .centre): .bottom; case (.bottom, .right): .bottomRight
-        default: nil
         }
     }
     /// Where a new person's panel opens: top centre, Spotlight's own place (his review of 0.4: «flush to the top as
@@ -32,7 +32,9 @@ enum Place: String, CaseIterable {
 
     var title: String {
         switch self {
-        case .topLeft: L("Top Left"); case .top: L("Top Center"); case .topRight: L("Top Right"); case .middle: L("Center")
+        // The nine names of Apple's own Shortcuts (WorkflowKit, WFPosition).
+        case .topLeft: L("Top Left"); case .top: L("Top Center"); case .topRight: L("Top Right")
+        case .middleLeft: L("Middle Left"); case .middle: L("Center"); case .middleRight: L("Middle Right")
         case .bottomLeft: L("Bottom Left"); case .bottom: L("Bottom Center"); case .bottomRight: L("Bottom Right")
         }
     }
@@ -70,13 +72,13 @@ func screenKey(_ s: NSScreen) -> String {
     return CFUUIDCreateString(nil, u) as String
 }
 
-/// Dragging the panel (his pick 2026-11-14 10:13: by its edge, like Spotlight; widened in 0.5 to his seven places).
+/// Dragging the panel (his pick 2026-11-14 10:13: by its edge, like Spotlight; widened in 0.5 to his seven places, in 0.7 to nine).
 /// 0.5 and 0.6 never let the panel follow the hand: it stood still until the pointer was 40 pt nearer another place,
 /// then leapt there whole in 150 ms. Measured in his recording of 2026-11-15 (120 fps): leaps of 260-540 pt with the
 /// panel motionless in between, which he called «дёрганно… магнитится по-конченому очень сильно». Spotlight on 27.2,
 /// dragged in the same recording, follows the hand point for point; its centre line holds it until the hand is 26-30 pt
 /// past, then lets go; coming back it is caught with no jump at all («аккуратненько, раз, раз»).
-/// So since 0.7 the panel follows the hand, and each of the seven places is a soft magnet: caught within `snapIn`,
+/// So since 0.7 the panel follows the hand, and each of the nine places is a soft magnet: caught within `snapIn`,
 /// held until the hand is `snapOut` away (a shake smaller than that does not move it: the part of 0.6 he liked,
 /// «телепаешь в разные стороны, но она не телепается»), and both the catch and the letting go are a 120 ms eased
 /// slide, not a jump. Let go between places, it slides to the nearest one: at rest it is always at a place, exact
@@ -107,7 +109,7 @@ struct Places {
 func dist(_ a: NSPoint, _ b: NSPoint) -> CGFloat { hypot(a.x - b.x, a.y - b.y) }
 
 extension PanelController {
-    /// The seven places for the current height on the current screen.
+    /// The nine places for the current height on the current screen.
     var places: Places? {
         screen.map { s in
             Places(tops: [Place.top, .middle, .bottom].map { restingTop($0, height: height, on: s) },
@@ -179,14 +181,14 @@ extension PanelController {
         }
         if let p = dragPlace {
             dragRaw = ps.point(p)   // with no drag running, dragTarget is this: a slide still running ends there
-            if let sc = screen { store.setSetting("place." + screenKey(sc), p.rawValue) }
+            if let sc = screen { store.setSetting(placeKey + screenKey(sc), p.rawValue) }
         }
         dragPlaces = nil
     }
 
     /// Settings' «Position on Screen»: the place for the screen the panel opens on (the main one when it is closed).
     func setPlace(_ p: Place, on s: NSScreen) {
-        store.setSetting("place." + screenKey(s), p.rawValue)
+        store.setSetting(placeKey + screenKey(s), p.rawValue)
         if isVisible, screen == s {
             left = restingLeft(p, on: s)
             setBox(height: height, top: restingTop(p, height: height, on: s))

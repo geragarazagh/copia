@@ -75,6 +75,7 @@ extension PanelController: NSDraggingSource {
     /// Starts a drag of the picks once the mouse moved 3 pt with the button down on a row (the row is picked first if
     /// it was not, as in Finder).
     func dragOut(row: Int, event: NSEvent, at p: NSPoint) {
+        if queue != nil { return }
         guard row >= 0, row < rows.count, case .entry(let i) = rows[row] else { return }
         let id = shown[i].id
         if !sel.contains(id) { sel.click(id); selectionChanged() }

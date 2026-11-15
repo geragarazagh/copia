@@ -272,8 +272,8 @@ func unit() {
         check(restingLeft(.topLeft, on: sc) == v.minX + screenGap && restingLeft(.bottomRight, on: sc) + panelSize.width == v.maxX - screenGap
               && abs(restingLeft(.middle, on: sc) + panelSize.width / 2 - v.midX) <= 0.5, "left, centre and right columns")
     }
-    check(Place.allCases.count == 7 && Place.at(.middle, .left) == nil && Place(rawValue: "middle") == .middle && Place(rawValue: "top") == .top,
-          "seven places; 0.4's stored «top», «middle», «bottom» still read")
+    check(Place.allCases.count == 9 && Place.at(.middle, .left) == .middleLeft && Place(rawValue: "middle") == .middle && Place(rawValue: "top") == .top,
+          "nine places; 0.4's stored «top», «middle», «bottom» still read")
 
     // Drag (place.swift, 0.7): the panel follows the hand; each place is a soft magnet (caught within 16 pt, held until
     // 30 pt, both by a 120 ms slide); let go between places, it slides to the nearest; at rest always exact.
@@ -340,9 +340,9 @@ func unit() {
         frames(12)
         check(NSPoint(x: dc.left, y: dc.top) == ps.point(.topLeft), "never past the outermost places")
         dc.dragEnd()
-        // The middle row has the centre only.
-        check(ps.nearest(NSPoint(x: ps.point(.topLeft).x, y: ps.point(.middle).y)) != .middle || true, "no left or right place in the middle row")
-        check(!Place.allCases.contains { ps.point($0) == NSPoint(x: ps.lefts[0], y: ps.tops[1]) }, "no place at the middle left")
+        // The middle row has all three places since 0.7.
+        check(ps.at(NSPoint(x: ps.lefts[0], y: ps.tops[1])) == .middleLeft && ps.at(NSPoint(x: ps.lefts[2], y: ps.tops[1])) == .middleRight,
+              "the middle row has its left and right places (0.7)")
         // Settings' Position on Screen sets the same place.
         dc.setPlace(.bottom, on: main)
         check(dc.placeFor(main) == .bottom, "Position on Screen sets the place")
@@ -504,13 +504,13 @@ func queueTests() {
     _ = wait(0.05) { false }
     check(pb.string(forType: .string) == "first line" && q.asks >= 1 && q.pastes == 0, "a read with no key: served, not a paste")
     settle()
-    check(q.next == 0, "the queue stays on the first item")
+    check(q.pasted == 0, "the queue stays on the first item")
     // ⌘V: a key after the item was placed; the app reads plain text and then RTF and HTML: one paste.
     key = 0.01
     _ = pb.string(forType: .string); _ = pb.data(forType: .rtf); _ = pb.string(forType: .string)
-    check(q.pastes == 1 && q.next == 0, "one paste counted for several reads, the next item waits for them to stop")
+    check(q.pastes == 1 && q.pasted == 0, "one paste counted for several reads, the next item waits for them to stop")
     settle()
-    check(q.next == 1 && pb.string(forType: .string) == "second line" && events.contains("paste0"), "then the second item takes its place")
+    check(q.pasted == 1 && pb.string(forType: .string) == "second line" && events.contains("paste0"), "then the second item takes its place")
     // A copy while it waits joins the end; the clipboard still gives the queue's next item.
     key = 100
     q.add([ids[2]])
@@ -520,10 +520,10 @@ func queueTests() {
     settle()
     // The picture: promised as a file, a PNG and a TIFF made only when asked.
     let tiff = pb.data(forType: .tiff), png = pb.data(forType: .png)
-    check(q.next == 2 && png != nil && tiff.flatMap { NSImage(data: $0) }?.size.width ?? 0 > 0 && pb.pasteboardItems?.first?.types.contains(.fileURL) == true,
+    check(q.pasted == 2 && png != nil && tiff.flatMap { NSImage(data: $0) }?.size.width ?? 0 > 0 && pb.pasteboardItems?.first?.types.contains(.fileURL) == true,
           "the picture: file, PNG and a TIFF made from it")
     settle()
-    check(q.next == 3 && emptied == 1 && q.left == 0, "the last one pasted: the queue is empty (\(q.next), \(emptied))")
+    check(q.pasted == 3 && emptied == 1 && q.left == 0, "the last one pasted: the queue is empty (\(q.pasted), \(emptied))")
     // Closing: what was last on the clipboard stays as ordinary data, no longer promised.
     let count = pb.changeCount
     q.close()
@@ -533,6 +533,20 @@ func queueTests() {
     q.add([ids[3], ids[0]])
     q.close()
     check(pb.string(forType: .string) == "last" && q.asks == 0, "closed early: the next item stays, as ordinary data (no ask)")
+    // Newest first (Settings, «Paste Order»): 4, 3, 2, 1; a copy made while it waits goes first.
+    q.newestFirst = true
+    q.open(); key = 100
+    q.add([ids[0]]); q.add([ids[1]])
+    check(pb.string(forType: .string) == "second line" && q.pending == [1, 0], "newest first: the last copy is next")
+    settle()   // that read had no key behind it: the item is promised anew before the real paste
+    key = 0.01
+    _ = pb.string(forType: .string)
+    settle()
+    key = 100
+    q.add([ids[3]])
+    let top = pb.string(forType: .string)
+    check(q.pasted == 1 && top == "last" && q.pending == [2, 0], "a new copy goes first; the older one waits (\(q.pasted), \(top ?? "-"), \(q.pending))")
+    q.close()
     pb.releaseGlobally()
     try? FileManager.default.removeItem(at: dir)
 }

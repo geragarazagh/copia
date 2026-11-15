@@ -1,16 +1,12 @@
 // The shelf: what the paste queue shows while it is open (queue.swift). It floats over the work and never takes the
-// keyboard, so the app being copied from and pasted into stays in front. Three looks were built for his first look
-// (2026-11-15; COPIA_SHELF=list|pill|deck until he picks, then the others go):
-// - list: a small glass list in the bottom right corner (the screenshot thumbnail's corner; the top right is where
-//   notifications come and would cover it, seen in the first trial); every item in order, the next one at the top in
-//   the accent colour, a pasted one slides out of the top;
-// - pill: one capsule under the menu bar in the middle, with only the next item and the count;
-// - deck (the bold one): a stack of cards in the bottom right corner, the next item large on the front card; a paste
-//   takes the front card away.
+// keyboard, so the app being copied from and pasted into stays in front. His look at three variants (2026-11-15 ~09:30,
+// card «His look at the 0.7 shelf variants»): a list, a capsule (rejected: «бред какой-то») and a deck of cards (the
+// bold one, «логично»). From the list came his own idea, built as `panel`: the history's own panel, empty, filled by
+// copying (panel.swift, queue mode). The deck stays here (COPIA_SHELF=deck) until he says which of the two stays.
 import AppKit
 
-enum ShelfLookKind: String { case list, pill, deck }
-let shelfLook = ShelfLookKind(rawValue: ProcessInfo.processInfo.environment["COPIA_SHELF"] ?? "") ?? .list
+enum ShelfLookKind: String { case panel, deck }
+let shelfLook = ShelfLookKind(rawValue: ProcessInfo.processInfo.environment["COPIA_SHELF"] ?? "") ?? .panel
 
 /// Room around the box inside the window for the glass's shadow.
 let shelfMargin: CGFloat = 40
@@ -29,18 +25,18 @@ final class Shelf: NSObject {
     let look: ShelfLook
     let window: ShelfPanel
     var screen: NSScreen?
+    /// The look he chose for А (2026-11-15 ~09:30): the history's own panel, empty, filled by copying.
+    let panel: PanelController?
 
     init(queue: PasteQueue, store: Store, kind: ShelfLookKind = shelfLook) {
         self.queue = queue
         self.store = store
-        switch kind {
-        case .list: look = ListLook()
-        case .pill: look = PillLook()
-        case .deck: look = DeckLook()
-        }
+        look = DeckLook()
         window = ShelfPanel(look: look)
+        panel = kind == .panel ? PanelController(store: store, monitor: nil, queue: queue) : nil
         super.init()
         look.onClose = { [weak self] in self?.close() }
+        panel?.view.close.onClick = { [weak self] in self?.close() }
         queue.onChange = { [weak self] c in self?.changed(c) }
         // The last item pasted: the job is done, the shelf goes (Claude's pick, asked of him 2026-11-15).
         queue.onEmptied = { [weak self] in
@@ -53,12 +49,21 @@ final class Shelf: NSObject {
     func open() {
         let mouse = NSEvent.mouseLocation
         screen = trialScreen() ?? NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
+        queue.newestFirst = store.newestFirst
         queue.open()
     }
 
     func close() { queue.close() }
 
     private func changed(_ c: PasteQueue.Change) {
+        if let p = panel {
+            switch c {
+            case .opened: p.show()
+            case .closed: p.hide()
+            default: p.animateNext = true; p.reload()   // a paste: the row leaves upwards; a copy: it comes in below
+            }
+            return
+        }
         switch c {
         case .opened:
             look.show(queue, store: store, change: nil)
@@ -83,17 +88,12 @@ final class Shelf: NSObject {
         }
     }
 
-    /// The window around the box, anchored where the look lives: its top centre or bottom right corner stays put while
-    /// the box grows or shrinks.
+    /// The deck's window, anchored at the bottom right corner.
     func place(animated: Bool) {
         guard let s = screen ?? NSScreen.main else { return }
         let v = s.visibleFrame, b = look.boxSize(queue)
         let w = b.width + 2 * shelfMargin, h = b.height + 2 * shelfMargin
-        var o = NSPoint.zero
-        switch look {
-        case is PillLook: o = NSPoint(x: (v.midX - w / 2).rounded(), y: s.frame.maxY - 38 - b.height - shelfMargin)
-        default: o = NSPoint(x: v.maxX - 16 - b.width - shelfMargin, y: v.minY + 16 - shelfMargin)
-        }
+        let o = NSPoint(x: v.maxX - 16 - b.width - shelfMargin, y: v.minY + 16 - shelfMargin)
         let f = NSRect(x: o.x, y: o.y, width: w, height: h)
         if animated {
             NSAnimationContext.runAnimationGroup { x in
@@ -209,210 +209,6 @@ final class CloseButton: NSButton {
     override func acceptsFirstMouse(for e: NSEvent?) -> Bool { true }
 }
 
-/// «3 of 7»: the next item's place in the copy order and how many were copied.
-func queueCount(_ q: PasteQueue) -> String { "\(q.next + 1) of \(q.ids.count)" }
-
-// MARK: list
-
-/// One row of the list: the picture, the text's start or the file's name, the copy order as a plain number at the
-/// trailing end (his pick for the panel's rows, 0.5); the next item drawn in the accent colour, as a selected row.
-final class ShelfRow: NSView {
-    let picture = NSImageView()
-    let title = shelfLabel("", size: 13)
-    let number = shelfLabel("", size: 12)
-    var isNext = false { didSet { needsDisplay = true; colours() } }
-    override var isFlipped: Bool { true }
-
-    init(_ e: Entry, order: Int, store: Store) {
-        super.init(frame: .zero)
-        wantsLayer = true
-        picture.image = Thumbs.shared.thumb(e, store: store, side: 24)
-        title.stringValue = e.title.replacingOccurrences(of: "\n", with: " ")
-        number.stringValue = "\(order)"
-        number.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
-        number.alignment = .right
-        for v in [picture, title, number] { addSubview(v) }
-        colours()
-    }
-    required init?(coder: NSCoder) { fatalError() }
-
-    private func colours() {
-        title.textColor = isNext ? .alternateSelectedControlTextColor : .labelColor
-        number.textColor = isNext ? .alternateSelectedControlTextColor : .secondaryLabelColor
-    }
-
-    override func layout() {
-        super.layout()
-        let h = bounds.height
-        picture.frame = NSRect(x: 10, y: (h - 24) / 2, width: 24, height: 24)
-        number.frame = NSRect(x: bounds.width - 10 - 28, y: (h - 16) / 2, width: 28, height: 16)
-        title.frame = NSRect(x: 44, y: (h - 17) / 2, width: bounds.width - 44 - 44, height: 17)
-    }
-
-    override func draw(_ r: NSRect) {
-        guard isNext else { return }
-        NSColor.controlAccentColor.setFill()   // the person's accent, never a fixed blue (rules.md)
-        NSBezierPath(roundedRect: bounds, xRadius: 8, yRadius: 8).fill()
-    }
-}
-
-final class ListLook: NSView, ShelfLook {
-    static let width: CGFloat = 300, head: CGFloat = 40, rowH: CGFloat = 36, gap: CGFloat = 2, pad: CGFloat = 6, most = 8
-    let glass = GlassBox(corner: 18)
-    let title = shelfLabel("Paste Queue", size: 13, weight: .semibold)
-    let count = shelfLabel("", size: 12, color: .secondaryLabelColor)
-    let empty = shelfLabel("Copy to add to the queue", size: 12, color: .secondaryLabelColor)
-    let more = shelfLabel("", size: 11, color: .tertiaryLabelColor)
-    let close = CloseButton()
-    var onClose: () -> Void = {} { didSet { close.onClick = onClose } }
-    private var rows: [Int: ShelfRow] = [:]   // by place in the queue
-    /// The rows' area under the header: it clips them, so a pasted row leaving upwards is never drawn over the title.
-    private let list = FlippedView()
-    override var isFlipped: Bool { true }
-
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        addSubview(glass)
-        list.wantsLayer = true
-        list.layer?.masksToBounds = true
-        glass.content.addSubview(list)
-        for v in [title, count, close, empty, more] { glass.content.addSubview(v) }
-        count.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
-        count.alignment = .right
-        empty.alignment = .center
-        more.alignment = .center
-    }
-    required init?(coder: NSCoder) { fatalError() }
-
-    private func shown(_ q: PasteQueue) -> Range<Int> { q.next..<min(q.ids.count, q.next + ListLook.most) }
-
-    func boxSize(_ q: PasteQueue) -> NSSize {
-        let n = shown(q).count
-        let list = n == 0 ? 40 : CGFloat(n) * (ListLook.rowH + ListLook.gap) - ListLook.gap
-        let extra: CGFloat = q.left > ListLook.most ? 22 : 0
-        return NSSize(width: ListLook.width, height: ListLook.head + list + extra + ListLook.pad + 2)
-    }
-
-    private func rowFrame(_ k: Int) -> NSRect {
-        NSRect(x: ListLook.pad, y: CGFloat(k) * (ListLook.rowH + ListLook.gap), width: ListLook.width - 2 * ListLook.pad,
-               height: ListLook.rowH)
-    }
-
-    func show(_ q: PasteQueue, store: Store, change: PasteQueue.Change?) {
-        let w = ListLook.width
-        title.frame = NSRect(x: 16, y: 13, width: 160, height: 17)
-        close.frame = NSRect(x: w - 10 - 20, y: 11, width: 20, height: 20)
-        count.frame = NSRect(x: w - 36 - 90, y: 13, width: 90, height: 16)
-        count.stringValue = q.ids.isEmpty ? "" : q.left == 0 ? "Done" : queueCount(q)
-        empty.isHidden = q.left > 0
-        empty.stringValue = q.ids.isEmpty ? "Copy to add to the queue" : "All pasted"
-        empty.frame = NSRect(x: 12, y: ListLook.head + 10, width: w - 24, height: 16)
-        let range = shown(q)
-        list.frame = NSRect(x: 0, y: ListLook.head, width: w, height: 2000)
-        // Pasted: the row slides up out of the top and fades, the others take their places (the system's table motion).
-        for (i, r) in rows where !range.contains(i) {
-            rows[i] = nil
-            NSAnimationContext.runAnimationGroup({ x in
-                x.duration = 0.2; x.timingFunction = CAMediaTimingFunction(controlPoints: 0.25, 0.1, 0.25, 1)
-                r.animator().frame = r.frame.offsetBy(dx: 0, dy: -(ListLook.rowH + ListLook.gap))
-                r.animator().alphaValue = 0
-            }, completionHandler: { r.removeFromSuperview() })
-        }
-        for (k, i) in range.enumerated() {
-            if let r = rows[i] {
-                r.isNext = i == q.next
-                if change == nil { r.frame = rowFrame(k) } else {
-                    NSAnimationContext.runAnimationGroup { x in
-                        x.duration = 0.2; x.timingFunction = CAMediaTimingFunction(controlPoints: 0.25, 0.1, 0.25, 1)
-                        r.animator().frame = rowFrame(k)
-                    }
-                }
-            } else if let e = store.entry(q.ids[i]) {
-                // A new copy: in place at once; the box's bottom edge then grows to show it (Spotlight's grammar).
-                let r = ShelfRow(e, order: i + 1, store: store)
-                r.frame = rowFrame(k)
-                r.isNext = i == q.next
-                list.addSubview(r)
-                rows[i] = r
-            }
-        }
-        let hidden = q.left - range.count
-        more.isHidden = hidden <= 0
-        more.stringValue = "\(hidden) more"
-        more.frame = NSRect(x: 12, y: ListLook.head + CGFloat(range.count) * (ListLook.rowH + ListLook.gap) + 2, width: w - 24, height: 14)
-    }
-
-    override func layout() { super.layout(); glass.frame = bounds }
-}
-
-// MARK: pill
-
-final class PillLook: NSView, ShelfLook {
-    static let h: CGFloat = 44
-    let glass = GlassBox(corner: 22)
-    let picture = NSImageView()
-    let title = shelfLabel("", size: 13, weight: .medium)
-    let count = shelfLabel("", size: 12, color: .secondaryLabelColor)
-    let close = CloseButton()
-    var onClose: () -> Void = {} { didSet { close.onClick = onClose } }
-    override var isFlipped: Bool { true }
-
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        addSubview(glass)
-        for v in [picture, title, count, close] { glass.content.addSubview(v) }
-        count.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
-        title.wantsLayer = true
-        picture.wantsLayer = true
-    }
-    required init?(coder: NSCoder) { fatalError() }
-
-    private func width(_ l: NSTextField) -> CGFloat {
-        ceil((l.stringValue as NSString).size(withAttributes: [.font: l.font!]).width) + 4
-    }
-    private func titleWidth() -> CGFloat { min(320, max(140, width(title))) }
-    private func countWidth() -> CGFloat { count.stringValue.isEmpty ? 0 : width(count) }
-
-    func boxSize(_ q: PasteQueue) -> NSSize {
-        let pic: CGFloat = picture.isHidden ? 0 : 24 + 10
-        let c = countWidth()
-        return NSSize(width: 16 + pic + titleWidth() + (c > 0 ? 12 + c : 0) + 10 + 20 + 12, height: PillLook.h)
-    }
-
-    func show(_ q: PasteQueue, store: Store, change: PasteQueue.Change?) {
-        let e = q.nextID.flatMap(store.entry)
-        let before = title.stringValue
-        if let e {
-            picture.isHidden = false
-            picture.image = Thumbs.shared.thumb(e, store: store, side: 24)
-            title.stringValue = e.title.replacingOccurrences(of: "\n", with: " ")
-            title.textColor = .labelColor
-            count.stringValue = queueCount(q)
-        } else {
-            picture.isHidden = true
-            title.stringValue = q.ids.isEmpty ? "Paste Queue: copy to add" : "All pasted"
-            title.textColor = .secondaryLabelColor
-            count.stringValue = ""
-        }
-        // The next item comes in from the trailing side as the pasted one leaves (a push, 200 ms).
-        if case .pasted = change, before != title.stringValue {
-            let t = CATransition()
-            t.type = .push; t.subtype = .fromRight; t.duration = 0.2
-            t.timingFunction = CAMediaTimingFunction(controlPoints: 0.25, 0.1, 0.25, 1)
-            title.layer?.add(t, forKey: "push"); picture.layer?.add(t, forKey: "push")
-        }
-        let s = boxSize(q)
-        var x: CGFloat = 16
-        if !picture.isHidden { picture.frame = NSRect(x: x, y: (s.height - 24) / 2, width: 24, height: 24); x += 34 }
-        title.frame = NSRect(x: x, y: (s.height - 17) / 2, width: titleWidth(), height: 17); x += titleWidth()
-        let c = countWidth()
-        if c > 0 { x += 12; count.frame = NSRect(x: x, y: (s.height - 16) / 2, width: c, height: 16); x += c }
-        count.isHidden = c == 0
-        close.frame = NSRect(x: s.width - 12 - 20, y: (s.height - 20) / 2, width: 20, height: 20)
-    }
-
-    override func layout() { super.layout(); glass.frame = bounds }
-}
 
 // MARK: deck
 
@@ -530,8 +326,8 @@ final class DeckLook: NSView, ShelfLook {
     }
 
     func show(_ q: PasteQueue, store: Store, change: PasteQueue.Change?) {
-        let range = q.next..<min(q.ids.count, q.next + DeckLook.depth + 1)
-        let wanted: [Int] = range.isEmpty ? [-1] : Array(range)
+        let range = Array(q.pending.prefix(DeckLook.depth + 1))
+        let wanted: [Int] = range.isEmpty ? [-1] : range
         for (i, c) in cards where !wanted.contains(i) {
             cards[i] = nil
             if case .pasted = change, i >= 0 {

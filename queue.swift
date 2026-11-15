@@ -13,13 +13,18 @@ final class PasteQueue: NSObject {
     let pb: NSPasteboard
     weak var monitor: Monitor?
 
-    /// The entries in the order they were copied; `next` is the one ⌘V pastes now. An entry copied twice is in it
-    /// twice, as copied.
+    /// The entries in the order they were copied (an entry copied twice is in it twice), and the places in `ids` still
+    /// waiting, in the order they will be pasted: the order of copying, or the newest first (his word 2026-11-15: a
+    /// choice between 1, 2, 3, 4 and 4, 3, 2, 1; Settings, «Paste Order»).
     private(set) var ids: [Int64] = []
-    private(set) var next = 0
+    private(set) var pending: [Int] = []
+    private(set) var last: Int?
     private(set) var isOpen = false
-    var left: Int { max(0, ids.count - next) }
-    var nextID: Int64? { next < ids.count ? ids[next] : nil }
+    var newestFirst = false
+    var left: Int { pending.count }
+    var pasted: Int { ids.count - pending.count }
+    var nextIndex: Int? { pending.first }
+    var nextID: Int64? { nextIndex.map { ids[$0] } }
 
     enum Change { case opened, added(Int), pasted(Int), closed }
     var onChange: (Change) -> Void = { _ in }
@@ -52,7 +57,7 @@ final class PasteQueue: NSObject {
     func open() {
         guard !isOpen else { return }
         isOpen = true
-        ids = []; next = 0; asks = 0; pastes = 0
+        ids = []; pending = []; last = nil; asks = 0; pastes = 0
         onChange(.opened)
     }
 
@@ -63,12 +68,12 @@ final class PasteQueue: NSObject {
         settleTimer?.invalidate(); settleTimer = nil
         renewTimer?.invalidate(); renewTimer = nil
         renewAfter = 0.3
-        if pb.changeCount == placedCount, let id = nextID ?? (next > 0 ? ids[next - 1] : nil), let e = store.entry(id) {
+        if pb.changeCount == placedCount, let id = nextID ?? last.map({ ids[$0] }), let e = store.entry(id) {
             let r = Copia.write([(e, store.reps(id))], store: store, to: pb)
             monitor?.ownCount = r.count
         }
         isOpen = false
-        ids = []; next = 0; providers = []; pasting = false
+        ids = []; pending = []; last = nil; providers = []; pasting = false
         onChange(.closed)
     }
 
@@ -77,6 +82,8 @@ final class PasteQueue: NSObject {
         guard isOpen, !new.isEmpty else { return }
         let was = ids.count
         ids += new
+        let added = Array(was..<ids.count)
+        pending = newestFirst ? added.reversed() + pending : pending + added
         onChange(.added(was))
         // The copy itself is on the clipboard now; the queue's next item goes back on top of it.
         place()
@@ -146,8 +153,10 @@ final class PasteQueue: NSObject {
         settleTimer?.invalidate(); settleTimer = nil
         guard pasting, isOpen else { return }
         pasting = false
-        next += 1
-        onChange(.pasted(next - 1))
+        guard !pending.isEmpty else { return }
+        let i = pending.removeFirst()
+        last = i
+        onChange(.pasted(i))
         if nextID != nil { place() } else { onEmptied() }
     }
 }

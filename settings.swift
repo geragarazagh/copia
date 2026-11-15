@@ -66,6 +66,11 @@ extension Store {
         get { setting("hotkey").flatMap(HotKey.init) ?? .standard }
         set { setSetting("hotkey", newValue.stored) }
     }
+    /// The paste queue's order (his word 2026-11-15): the order of copying, or the newest first. Photos' words.
+    var newestFirst: Bool {
+        get { setting("queueorder") == "newest" }
+        set { setSetting("queueorder", newValue ? "newest" : "oldest") }
+    }
     var queueKey: HotKey {
         get { setting("queuekey").flatMap(HotKey.init) ?? .queue }
         set { setSetting("queuekey", newValue.stored) }
@@ -90,6 +95,7 @@ final class SettingsView: FlippedLayout {
     private let column = FlippedView()
     private let recorder = ShortcutButton()
     private let queueRecorder = ShortcutButton()
+    private let order = NSPopUpButton()
     private let login = NSSwitch()
     private let keep = NSPopUpButton()
     private let position = NSPopUpButton()
@@ -111,6 +117,9 @@ final class SettingsView: FlippedLayout {
             o.store.queueKey = k
             o.onHotKeyChange?()
         }
+        order.addItems(withTitles: [L("Oldest First"), L("Newest First")])
+        order.target = self; order.action = #selector(orderChanged)
+        order.isBordered = false
         login.target = self; login.action = #selector(loginChanged)
         // The periods, then the open end after a separator, as STT's Mac pop-up groups them.
         for k in Keep.allCases {
@@ -119,10 +128,10 @@ final class SettingsView: FlippedLayout {
         }
         keep.target = self; keep.action = #selector(keepChanged)
         keep.isBordered = false
-        // The panel's place, as the Dock's «Position on screen»: the seven places (place.swift), also reached by
+        // The panel's place, as the Dock's «Position on screen»: the nine places (place.swift), also reached by
         // dragging the panel by its edge; for the screen it opens on now (each screen keeps its own).
         for p in Place.allCases { position.addItem(withTitle: p.title); position.lastItem?.representedObject = p.rawValue }
-        position.menu?.insertItem(.separator(), at: 3); position.menu?.insertItem(.separator(), at: 5)
+        position.menu?.insertItem(.separator(), at: 3); position.menu?.insertItem(.separator(), at: 7)   // by rows
         position.target = self; position.action = #selector(positionChanged)
         position.isBordered = false
         clear.title = L("Clear Clipboard History…")
@@ -130,8 +139,8 @@ final class SettingsView: FlippedLayout {
         clear.target = self; clear.action = #selector(clearHistory)
 
         groups = [
-            GroupBox(rows: [(L("Show History"), recorder), (L("Paste Queue"), queueRecorder), (L("Position on Screen"), position),
-                            (L("Open at Login"), login)]),
+            GroupBox(rows: [(L("Show History"), recorder), (L("Position on Screen"), position), (L("Open at Login"), login)]),
+            GroupBox(rows: [(L("Paste Queue"), queueRecorder), (L("Paste Order"), order)]),
             GroupBox(rows: [(L("Keep History"), keep)]),
             GroupBox(rows: [("", clear)], centered: true),
         ]
@@ -145,11 +154,14 @@ final class SettingsView: FlippedLayout {
         guard let o = owner else { return }
         recorder.key = o.store.hotKey
         queueRecorder.key = o.store.queueKey
+        order.selectItem(at: o.store.newestFirst ? 1 : 0)
         login.state = loginItem.status == .enabled ? .on : .off
         keep.selectItem(withTitle: o.store.keep.title)
         let p = NSScreen.main.flatMap { o.store.setting("place." + screenKey($0)).flatMap(Place.init) } ?? .standard
         position.selectItem(withTitle: p.title)
     }
+
+    @objc private func orderChanged() { owner?.store.newestFirst = order.indexOfSelectedItem == 1 }
 
     @objc private func positionChanged() {
         guard let o = owner, let p = (position.selectedItem?.representedObject as? String).flatMap(Place.init), let s = NSScreen.main else { return }
