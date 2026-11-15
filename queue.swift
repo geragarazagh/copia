@@ -153,6 +153,14 @@ final class PasteQueue: NSObject {
         settleTimer = t
     }
 
+    /// The next item was dragged out of the deck and dropped into an app: that is a paste too.
+    func take() {
+        guard isOpen, !pending.isEmpty else { return }
+        settleTimer?.invalidate(); settleTimer = nil
+        pasting = true
+        advance()
+    }
+
     /// The paste is over: the next item takes its place.
     func advance() {
         settleTimer?.invalidate(); settleTimer = nil

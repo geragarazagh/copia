@@ -10,7 +10,7 @@ set -e
 cd "${0:A:h}"
 t=$TMPDIR/copia-tests
 swiftc -O -target arm64-apple-macos13.0 -o $t tests/main.swift app.swift capture.swift model.swift store.swift copy.swift \
-  selection.swift panel.swift rows.swift text.swift motion.swift place.swift preview.swift menu.swift browser.swift views.swift settings.swift link.swift drag.swift queue.swift shelf.swift
+  selection.swift panel.swift rows.swift text.swift motion.swift place.swift preview.swift menu.swift browser.swift views.swift settings.swift link.swift drag.swift queue.swift shelf.swift deck.swift
 if [ "$1" = general ]; then $t general; exit; fi
 if [ "$1" = cs ]; then
   T=/Users/Shared/claude/clip; mkdir -p $T; chmod 777 $T

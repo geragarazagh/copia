@@ -1,31 +1,22 @@
-// The shelf: what the paste queue shows while it is open (queue.swift). His look at three variants (2026-11-15
-// ~09:30-09:55, card «His look at the 0.7 shelf variants»): a list, a capsule and a deck of cards were built and shot;
-// the capsule and the deck are rejected («без колодки… как оригинальное окошко полноценной истории, без всяких
-// усложнений»), and from the list came his own form: the history's own panel, empty, filled by copying (panel.swift,
-// queue mode). It never takes the keyboard, so the app copied from and pasted into stays in front. After the last paste
-// it closes itself (his word: «сразу закрывается и всё»).
+// The shelf: what the paste queue shows while it is open (queue.swift). His looks at it (2026-11-15, card «His look at
+// the 0.7 shelf variants»): a list, a capsule and a deck were shot; then the history's own panel was built as his idea
+// for the list and tried by his hand (~10:00): «огромное… неудобное». The shelf is the small deck (deck.swift), as
+// macOS's screenshot thumbnails. It never takes the keyboard, so the app copied from and pasted into stays in front;
+// after the last paste it closes itself (his word: «сразу закрывается и всё»).
 import AppKit
 
 final class Shelf: NSObject {
     let queue: PasteQueue
-    let panel: PanelController
+    let deck: Deck
 
     init(queue: PasteQueue, store: Store) {
         self.queue = queue
-        panel = PanelController(store: store, monitor: nil, queue: queue)
+        deck = Deck(queue: queue, store: store)
         super.init()
-        panel.view.close.onClick = { [weak self] in self?.close() }
-        queue.onChange = { [weak self] c in
-            guard let p = self?.panel else { return }
-            switch c {
-            case .opened: p.show()
-            case .closed: p.hide()
-            default: p.animateNext = true; p.reload()   // a paste: the row leaves upwards; a copy: it comes in below
-            }
-        }
+        queue.onChange = { [weak self] c in self?.deck.changed(c) }
         queue.onEmptied = { [weak self] in
-            // A moment to see the last row go, then the shelf goes too.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { if self?.queue.left == 0 { self?.close() } }
+            // The last card flies off; then the deck goes too.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { if self?.queue.left == 0 { self?.close() } }
         }
     }
 

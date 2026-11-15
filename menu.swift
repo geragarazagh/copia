@@ -7,7 +7,6 @@ import UniformTypeIdentifiers
 
 extension PanelController: NSMenuDelegate {
     func contextMenu(row: Int) -> NSMenu? {
-        if queue != nil { return nil }
         guard row >= 0, row < rows.count, case .entry(let i) = rows[row] else { return nil }
         let id = shown[i].id
         if !sel.contains(id) { sel.click(id); selectionChanged() }

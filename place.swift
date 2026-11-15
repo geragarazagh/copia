@@ -108,6 +108,97 @@ struct Places {
 
 func dist(_ a: NSPoint, _ b: NSPoint) -> CGFloat { hypot(a.x - b.x, a.y - b.y) }
 
+/// The soft-magnet drag itself, shared by the history panel and the paste queue's deck: it moves a box whose top-left
+/// point it reads and sets, between one set of places (the reasons for each number: the comment on `snapIn` above).
+final class SnapDrag {
+    let ticker = Ticker()
+    /// The place holding the box (nil while it follows the hand), where the hand would put it, this drag's places.
+    private(set) var place: Place?
+    private(set) var raw = NSPoint.zero
+    private(set) var places: Places?
+    /// Counted for the tests (the trackpad's tap itself cannot be observed).
+    private(set) var taps = 0
+    private let get: () -> NSPoint
+    private let set: (NSPoint) -> Void
+    init(get: @escaping () -> NSPoint, set: @escaping (NSPoint) -> Void) { self.get = get; self.set = set }
+
+    var running: Bool { places != nil }
+
+    /// Follows the mouse from a mouse-down until it goes up (a tracking loop, as AppKit's own window dragging does; the
+    /// motion timer keeps running in the tracking mode). Returns the place it ends at.
+    @discardableResult
+    func track(_ w: NSWindow, places ps: Places) -> Place? {
+        begin(ps)
+        let p0 = trialPointer ?? NSEvent.mouseLocation, start = get()
+        while let e = w.nextEvent(matching: [.leftMouseDragged, .leftMouseUp], until: .distantFuture, inMode: .eventTracking, dequeue: true) {
+            let p = trialPointer ?? NSEvent.mouseLocation
+            move(NSPoint(x: start.x + (p.x - p0.x), y: start.y + (p.y - p0.y)), ps)
+            if e.type == .leftMouseUp { break }
+        }
+        return end()
+    }
+
+    /// Taken: held at its place, or, caught while still sliding to one, free from where it is.
+    func begin(_ ps: Places) {
+        ticker.stop()
+        let here = get()
+        places = ps
+        place = ps.at(here)
+        raw = here
+    }
+
+    /// One step of a drag: where the hand would put the box is `r`.
+    func move(_ r: NSPoint, _ ps: Places) {
+        guard places != nil else { return }
+        raw = ps.clamp(r)
+        if let held = place {
+            if dist(ps.point(held), raw) > snapOut { place = nil; glide(snapStep) }
+        } else {
+            let n = ps.nearest(raw)
+            if dist(ps.point(n), raw) <= snapIn { place = n; tap(); glide(snapStep) }
+        }
+        if !ticker.running { put(target) }
+    }
+
+    /// Where the box goes now: its place while held, else under the hand.
+    private var target: NSPoint { place.flatMap { p in places?.point(p) } ?? raw }
+
+    private func put(_ p: NSPoint) { set(NSPoint(x: p.x.rounded(), y: p.y.rounded())) }
+
+    /// An eased slide from where the box is drawn to the target, which may keep moving with the hand meanwhile.
+    private func glide(_ d: Double) {
+        let from = get()
+        ticker.run { [weak self] t in
+            guard let self else { return false }
+            let to = self.target, k = Curve.ease(min(1, t / d))
+            self.put(t >= d ? to : NSPoint(x: mix(from.x, to.x, k), y: mix(from.y, to.y, k)))
+            return t < d
+        }
+    }
+
+    /// Let go: held, it stays; between places, it slides to the nearest one, longer for a longer way: 0.2 s plus 1 s per
+    /// 1500 pt, at most 0.45 s (a first 0.3 s cap moved it 88 pt in one frame over 380 pt in the trial of 2026-11-15;
+    /// this keeps the fastest frame near 30 pt). Returns the place, for the caller to remember.
+    @discardableResult
+    func end() -> Place? {
+        guard let ps = places else { return nil }
+        if place == nil {
+            let n = ps.nearest(raw)
+            place = n
+            glide(min(0.45, 0.2 + Double(dist(ps.point(n), get())) / 1500))
+        }
+        if let p = place { raw = ps.point(p) }   // with no drag running, target is this: a slide still running ends there
+        places = nil
+        return place
+    }
+
+    /// The trackpad's alignment tap (NSHapticFeedbackManager), as the system gives when something snaps into line.
+    func tap() {
+        taps += 1
+        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+    }
+}
+
 extension PanelController {
     /// The nine places for the current height on the current screen.
     var places: Places? {
@@ -117,74 +208,17 @@ extension PanelController {
         }
     }
 
-    /// Follows the mouse from a mouse-down on the panel's edge until it goes up (a tracking loop, as AppKit's own
-    /// window dragging does; the motion timer keeps running in the tracking mode).
+    /// Taken by its edge (Spotlight's way): the shared soft-magnet drag; the place is remembered for this screen.
     func drag(from down: NSEvent) {
         guard let w = window, let ps = places else { return }
-        dragBegin(places: ps)
-        let p0 = trialPointer ?? NSEvent.mouseLocation, start = NSPoint(x: left, y: top)
-        while let e = w.nextEvent(matching: [.leftMouseDragged, .leftMouseUp], until: .distantFuture, inMode: .eventTracking, dequeue: true) {
-            let p = trialPointer ?? NSEvent.mouseLocation
-            dragMove(raw: NSPoint(x: start.x + (p.x - p0.x), y: start.y + (p.y - p0.y)), places: ps)
-            if e.type == .leftMouseUp { break }
-        }
-        dragEnd()
+        if let p = snap.track(w, places: ps), let sc = screen { store.setSetting(placeKey + screenKey(sc), p.rawValue) }
     }
 
-    /// Taken by the edge: held at its place, or, caught while still sliding to one, free from where it is.
-    func dragBegin(places ps: Places) {
-        settleTicker.stop()
-        let here = NSPoint(x: left, y: top)
-        dragPlaces = ps
-        dragPlace = ps.at(here)
-        dragRaw = here
-    }
-
-    /// One step of a drag: where the hand would put the panel is `raw`.
-    func dragMove(raw r: NSPoint, places ps: Places) {
-        guard dragPlaces != nil else { return }
-        dragRaw = ps.clamp(r)
-        if let held = dragPlace {
-            if dist(ps.point(held), dragRaw) > snapOut { dragPlace = nil; glide(snapStep) }
-        } else {
-            let n = ps.nearest(dragRaw)
-            if dist(ps.point(n), dragRaw) <= snapIn { dragPlace = n; haptic(); glide(snapStep) }
-        }
-        if !settleTicker.running { put(dragTarget) }
-    }
-
-    /// Where the panel goes now: its place while held, else under the hand.
-    private var dragTarget: NSPoint { dragPlace.flatMap { p in dragPlaces?.point(p) } ?? dragRaw }
-
-    private func put(_ p: NSPoint) { left = p.x.rounded(); setBox(height: height, top: p.y.rounded()) }
-
-    /// An eased slide from where the panel is drawn to the target, which may keep moving with the hand meanwhile.
-    private func glide(_ d: Double) {
-        let from = NSPoint(x: left, y: top)
-        settleTicker.run { [weak self] t in
-            guard let self else { return false }
-            let to = self.dragTarget, k = Curve.ease(min(1, t / d))
-            self.put(t >= d ? to : NSPoint(x: mix(from.x, to.x, k), y: mix(from.y, to.y, k)))
-            return t < d
-        }
-    }
-
-    /// Let go: held, it stays; between places, it slides to the nearest one, longer for a longer way: 0.2 s plus 1 s per
-    /// 1500 pt, at most 0.45 s (a first 0.3 s cap moved it 88 pt in one frame over 380 pt in the trial of 2026-11-15;
-    /// this keeps the fastest frame near 30 pt). The place is remembered for this screen.
-    func dragEnd() {
-        guard let ps = dragPlaces else { return }
-        if dragPlace == nil {
-            let n = ps.nearest(dragRaw)
-            dragPlace = n
-            glide(min(0.45, 0.2 + Double(dist(ps.point(n), NSPoint(x: left, y: top))) / 1500))
-        }
-        if let p = dragPlace {
-            dragRaw = ps.point(p)   // with no drag running, dragTarget is this: a slide still running ends there
-            if let sc = screen { store.setSetting(placeKey + screenKey(sc), p.rawValue) }
-        }
-        dragPlaces = nil
-    }
+    // The drag's steps, for the tests.
+    func dragBegin(places ps: Places) { snap.begin(ps) }
+    func dragMove(raw r: NSPoint, places ps: Places) { snap.move(r, ps) }
+    func dragEnd() { if let p = snap.end(), let sc = screen { store.setSetting(placeKey + screenKey(sc), p.rawValue) } }
+    var hapticTaps: Int { snap.taps }
 
     /// Settings' «Position on Screen»: the place for the screen the panel opens on (the main one when it is closed).
     func setPlace(_ p: Place, on s: NSScreen) {
@@ -193,11 +227,5 @@ extension PanelController {
             left = restingLeft(p, on: s)
             setBox(height: height, top: restingTop(p, height: height, on: s))
         }
-    }
-
-    /// The trackpad's alignment tap (NSHapticFeedbackManager), as the system gives when something snaps into line.
-    func haptic() {
-        hapticTaps += 1
-        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
     }
 }

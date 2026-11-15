@@ -1224,8 +1224,8 @@ func qlCrash() {
 }
 
 /// The panel on a real screen (the agents' own session): focus on opening, ⌘F, Esc step by step, Return, the place.
-/// The paste queue's shelf on a real screen: the history's panel in queue mode, never key, at the bottom right; a paste
-/// takes the top row away with the bottom edge staying, and the next row is picked.
+/// The paste queue's deck on a real screen: never key, at the bottom right place, the front card leaves on a paste and
+/// the next comes forward; dragged by its edge to another place; closed.
 func shelfOnScreen() {
     let dir = tmpDir("shelf")
     defer { try? FileManager.default.removeItem(at: dir) }
@@ -1234,28 +1234,29 @@ func shelfOnScreen() {
     let q = PasteQueue(store: st, pasteboard: pb)
     q.sinceKey = { 0.01 }
     let sh = Shelf(queue: q, store: st)
-    let pc = sh.panel
-    sh.open(); _ = wait(0.3) { false }
-    check(pc.window!.isVisible && !pc.window!.isKeyWindow && !pc.window!.canBecomeKey,
-          "the shelf shows and takes no keyboard (visible \(pc.window!.isVisible), key \(pc.window!.isKeyWindow))")
-    check(pc.rows.isEmpty, "opens empty")
+    let d = sh.deck
+    sh.open(); _ = wait(0.6) { false }
+    check(d.window.isVisible && !d.window.isKeyWindow && !d.window.canBecomeKey && d.window.alphaValue > 0.99,
+          "the deck shows, faded in, and takes no keyboard")
     q.add([ids[0], ids[1], ids[2]]); _ = wait(0.4) { false }
-    if let s = pc.screen {
-        let f = pc.panelScreenRect
-        check(abs(f.maxX - (s.visibleFrame.maxX - screenGap)) < 0.5 && abs(f.minY - (s.visibleFrame.minY + screenGap)) < 0.5,
-              "at the bottom right place: \(f) in \(s.visibleFrame)")
-        check(pc.rows.count == 3 && pc.rowLook(0).0 && !pc.rowLook(1).0 && pc.rowLook(1).1 == 2, "three rows, the first picked, numbered by copy order")
-        _ = wait(0.1) { false }
-        // ⌘V: the app asks for the item's first type it takes (the mock's first entries are files and pictures).
+    if let s = d.screen {
+        let box = NSRect(x: d.origin.x, y: d.origin.y - deckBox.height, width: deckBox.width, height: deckBox.height)
+        check(abs(box.maxX - (s.visibleFrame.maxX - deckGap)) < 0.5 && abs(box.minY - (s.visibleFrame.minY + deckGap)) < 0.5,
+              "at the bottom right place: \(box) in \(s.visibleFrame)")
+        check(d.view.badge.number == 3, "the badge counts three")
         let t = pb.pasteboardItems?.first?.types.first { $0 != .own && $0 != .source }
         _ = t.flatMap { pb.data(forType: $0) }
-        _ = wait(PasteQueue.settle + 0.5) { false }
-        let g = pc.panelScreenRect
-        check(pc.rows.count == 2 && pc.rowLook(0).1 == 2 && abs(g.minY - f.minY) < 0.5 && g.height < f.height,
-              "a paste: the top row gone, the next picked, the bottom edge kept (\(f) → \(g))")
+        _ = wait(0.6) { false }
+        check(q.left == 2 && d.view.badge.number == 2, "a paste: two left (\(q.left))")
+        // Dragged by its edge to the top left (the drag's steps, as a hand would).
+        let ps = d.places(on: s)
+        d.snap.begin(ps); d.snap.move(ps.point(.topLeft), ps)
+        if let p = d.snap.end() { st.setSetting(d.placeKey + screenKey(s), p.rawValue) }
+        _ = wait(0.6) { false }
+        check(d.origin == ps.point(.topLeft) && d.placeFor(s) == .topLeft, "dragged to the top left: there, remembered")
     }
-    sh.close(); _ = wait(0.3) { false }
-    check(!pc.window!.isVisible, "closed")
+    sh.close(); _ = wait(0.4) { false }
+    check(!d.window.isVisible, "closed")
     pb.releaseGlobally()
 }
 

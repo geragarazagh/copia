@@ -67,16 +67,9 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     /// Slows every animation by this factor, to step its frames in a test (COPIA_SLOW).
     var slow: Double { Ticker.slow }
 
-    /// Set, this panel is the paste queue's shelf (queue.swift; his idea 2026-11-15: ⌃⌥C opens «the same window as the
-    /// history, only empty», what he copies fills it, ⌘V pastes from it): the same box, rows, motion, places and drag,
-    /// listing the items still to paste in the order they will be pasted, the next one picked. It never takes the
-    /// keyboard: copying and pasting go on in the app in front.
-    let queue: PasteQueue?
-
-    init(store: Store, monitor: Monitor?, onScreen: Bool = true, queue: PasteQueue? = nil) {
+    init(store: Store, monitor: Monitor?, onScreen: Bool = true) {
         self.store = store
         self.monitor = monitor
-        self.queue = queue
         view = PanelView(frame: NSRect(origin: .zero, size: panelSize), behindWindow: onScreen)
         super.init()
         view.table.dataSource = self
@@ -84,7 +77,6 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         view.table.owner = self
         view.field.delegate = self
         view.owner = self
-        if queue != nil { view.becomeShelf() }
         if onScreen {
             let w = Panel(view: view)
             w.delegate = self
@@ -101,14 +93,6 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
 
     /// Reads the history again (after a capture, a delete, an undo) and redraws in one frame.
     func reload() {
-        if let q = queue {
-            let live = q.pending.compactMap { i in store.entry(q.ids[i]).map { (i, $0) } }
-            queueOrder = live.map(\.0)
-            all = live.map(\.1)
-            filter()
-            selectionChanged()   // the rows kept on screen take their new looks: the new first one is the next
-            return
-        }
         all = store.entries()
         warmSearch()
         let gone = Set(sel.order).subtracting(all.map(\.id))
@@ -122,7 +106,7 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     /// folded once into UTF-8 bytes and searched with memmem (UTF-8 never matches in the middle of a character).
     func filter() {
         let q = Array(fold(query.trimmingCharacters(in: .whitespacesAndNewlines)))
-        if q.isEmpty || queue != nil { shown = all } else {
+        if q.isEmpty { shown = all } else {
             // Split over the cores: one thread scans 9 MB in about 12 ms, twelve do it in one or two.
             let hay = all.map(folded)
             let n = hay.count, chunks = max(1, min(n, ProcessInfo.processInfo.activeProcessorCount * 2))
@@ -139,7 +123,7 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         }
         var r: [Row] = []
         var day: Date?
-        for (i, e) in shown.enumerated() where queue == nil {
+        for (i, e) in shown.enumerated() {
             // Copies are newest first, so a new day starts only where the date falls below the current day's start.
             if let day, e.copied >= day { r.append(.entry(i)); continue }
             let d = Calendar.current.startOfDay(for: e.copied)
@@ -147,13 +131,9 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
             r.append(.entry(i))
         }
         let before = rowKeys
-        if queue != nil { r = shown.indices.map { .entry($0) } }   // in paste order, no day heads
         rows = r
         rowKeys = r.map { row -> String in
-            switch row {
-            case .head(let t): "h:" + t
-            case .entry(let i): queue != nil ? "q:\(queueOrder[i])" : "e:\(shown[i].id)"   // an entry may be queued twice
-            }
+            switch row { case .head(let t): "h:" + t; case .entry(let i): "e:\(shown[i].id)" }
         }
         // A deletion or its undo, on screen: the system's own list motion (Mail's: the rows fade while the ones below
         // slide up, or fade back in), the rows' only animation; every other change (a search, a copy arriving) lands
@@ -179,8 +159,6 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     private var rowKeys: [String] = []
     /// The next reload comes from a deletion or its undo.
     var animateNext = false
-    /// The shelf's rows: each one's place in the order of copying (its number at the row's end).
-    private(set) var queueOrder: [Int] = []
 
     enum ListChange: Equatable { case removed(IndexSet), inserted(IndexSet) }
 
@@ -231,11 +209,6 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     func fitHeight(animated: Bool) {
         let h1 = contentHeight()
         var t1 = top
-        // The shelf has no typing to keep steady: at a bottom place its bottom edge stays, at a middle place its centre.
-        if queue != nil, dragPlaces == nil, let s = screen, case let p = placeFor(s), p.row != .top,
-           NSPoint(x: left, y: top) == NSPoint(x: restingLeft(p, on: s), y: restingTop(p, height: height, on: s)) {
-            t1 = restingTop(p, height: h1, on: s)
-        }
         if let s = screen, t1 - h1 < s.visibleFrame.minY + screenGap { t1 = s.visibleFrame.minY + screenGap + h1 }
         guard h1 != height || t1 != top else { return }
         guard animated else { sizeTicker.stop(); setBox(height: h1, top: t1); return }
@@ -261,19 +234,13 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     var left: CGFloat = 0
 
     /// The place chosen for this screen (drag and snap, place.swift); top centre until the person moves it.
-    func placeFor(_ s: NSScreen) -> Place { store.setting(placeKey + screenKey(s)).flatMap(Place.init) ?? (queue == nil ? .standard : .bottomRight) }
-    /// The history's place and the shelf's are chosen apart (the shelf stays out while the history comes and goes):
-    /// the same nine places, the same drag; the shelf starts at the bottom right, the screenshot thumbnail's corner.
-    var placeKey: String { queue == nil ? "place." : "queueplace." }
+    func placeFor(_ s: NSScreen) -> Place { store.setting(placeKey + screenKey(s)).flatMap(Place.init) ?? .standard }
+    var placeKey: String { "place." }
 
-    // Drag state (place.swift): the place holding the panel (nil while it follows the hand), where the hand would put
-    // it, and the places of this drag (nil when no drag runs).
-    var dragPlace: Place?
-    var dragRaw = NSPoint.zero
-    var dragPlaces: Places?
-    let settleTicker = Ticker()
-    /// Counted for the tests (the trackpad's tap itself cannot be observed).
-    var hapticTaps = 0
+    /// The soft-magnet drag by the edge (place.swift).
+    lazy var snap = SnapDrag(get: { [unowned self] in NSPoint(x: self.left, y: self.top) },
+                             set: { [unowned self] p in self.left = p.x; self.setBox(height: self.height, top: p.y) })
+    var settleTicker: Ticker { snap.ticker }
 
     func entry(_ id: Int64) -> Entry? { all.first { $0.id == id } }
 
@@ -299,10 +266,6 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     }
 
     func updateFacts() {
-        if let q = queue {
-            view.setFacts(nil, note: q.left == 0 ? "" : counted(q.left, "object|objects") + " " + L("to paste"))
-            return
-        }
         if let m = monitor, m.denied {
             view.setFacts(nil, note: L("Reading the clipboard is off: Privacy & Security > Paste from Other Apps"))
         } else if !sel.isEmpty {
@@ -330,12 +293,10 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
 
     /// The rows' selection is drawn in the accent colour only while the list has the keys; with the caret in the
     /// search it turns grey, as any Mac list does when another control has the focus: one look tells where the keys go.
-    var focused: Bool { forceFocus || queue != nil || (window?.isKeyWindow == true && !searching) }
+    var focused: Bool { forceFocus || (window?.isKeyWindow == true && !searching) }
 
-    /// Whether row i is drawn picked, and its number: the person's picks in the history; in the shelf the next item
-    /// picked and every row numbered by the order of copying.
+    /// Whether row i is drawn picked, and its number in the order of picking.
     func rowLook(_ i: Int) -> (Bool, Int?) {
-        if queue != nil { return (i == 0, i < queueOrder.count ? queueOrder[i] + 1 : nil) }
         return (sel.contains(shown[i].id), sel.badge(shown[i].id))
     }
 
@@ -424,7 +385,7 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     // MARK: mouse (from ListTable)
 
     func mouseDown(row: Int, flags: NSEvent.ModifierFlags, clicks: Int) {
-        guard queue == nil, row >= 0, row < rows.count, case .entry(let i) = rows[row] else { return }
+        guard row >= 0, row < rows.count, case .entry(let i) = rows[row] else { return }
         // A click in the list gives it the keys, the query staying (Finder's way): 0.6 picked the row in grey and left
         // the caret blinking in the search, with no way back to the list but ↓ (his recording 2026-11-15 09:27).
         if searching { window?.makeFirstResponder(view) }
@@ -535,7 +496,6 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         view.field.stringValue = ""
         sel.clear(); pending = nil
         reload()
-        if queue != nil { showShelf(w); return }
         view.table.scrollRowToVisible(0)
         // On the screen with the pointer, centred across its visible frame (what the menu bar and the Dock leave), at
         // the place the person chose for that screen: the middle by default, his pick «посередине».
@@ -558,24 +518,6 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
             w.animator().alphaValue = 1
         }
         selectionChanged()
-    }
-
-    /// The shelf appears as the history does, at its own place, but never takes the keyboard.
-    private func showShelf(_ w: Panel) {
-        let mouse = NSEvent.mouseLocation
-        screen = trialScreen() ?? NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
-        sizeTicker.stop(); settleTicker.stop()
-        let h = contentHeight()
-        if let s = screen { left = restingLeft(placeFor(s), on: s) }
-        setBox(height: h, top: screen.map { restingTop(placeFor($0), height: h, on: $0) } ?? 0)
-        view.resetMotion()
-        w.alphaValue = 0
-        w.orderFrontRegardless()
-        NSAnimationContext.runAnimationGroup { c in
-            c.duration = 2.0 / 60 * slow
-            c.timingFunction = CAMediaTimingFunction(name: .linear)
-            w.animator().alphaValue = 1
-        }
     }
 
     func hide() {
@@ -777,7 +719,7 @@ final class Panel: NSPanel {
         contentView = root
     }
 
-    override var canBecomeKey: Bool { owner?.queue == nil }
+    override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
     /// The frame exactly as computed: AppKit otherwise pulls a window under the menu bar, and with the shadow's room
@@ -938,29 +880,6 @@ final class PanelView: NSView {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    // MARK: the shelf (the paste queue)
-
-    private(set) var isShelf = false
-    let close = CloseButton()
-
-    /// The same box as the history's: its field row says what it is and holds the close button; the whole row is an
-    /// edge to drag it by.
-    func becomeShelf() {
-        isShelf = true
-        icon.image = NSImage(systemSymbolName: "doc.on.clipboard", accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 18, weight: .medium))
-        field.isEditable = false
-        field.isSelectable = false
-        field.refusesFirstResponder = true
-        field.placeholderAttributedString = NSAttributedString(string: L("Paste Queue"), attributes: [
-            .font: NSFont.systemFont(ofSize: 20), .foregroundColor: NSColor.tertiaryLabelColor])
-        close.frame = NSRect(x: panelSize.width - 18 - 22, y: (fieldH - 22) / 2, width: 22, height: 22)
-        close.image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: L("Close"))?
-            .withSymbolConfiguration(.init(pointSize: 18, weight: .regular))
-        content.addSubview(close)
-        field.frame.size.width = close.frame.minX - 8 - field.frame.minX
-    }
-
     // MARK: taken by its edge
 
     weak var owner: PanelController?
@@ -971,7 +890,6 @@ final class PanelView: NSView {
     override func hitTest(_ p: NSPoint) -> NSView? {
         guard let hit = super.hitTest(p) else { return nil }
         let q = convert(p, from: superview)
-        if isShelf { return hit === close || hit.isDescendant(of: close) ? hit : self }
         if field.frame.contains(q) { return hit }
         let list = scroll.frame
         if list.contains(q) && q.x > list.minX + listInset && q.x < list.maxX - listInset { return hit }
