@@ -29,8 +29,8 @@ final class Deck: NSObject, NSDraggingSource {
     private let motion = Ticker(), fade = Ticker(), cardFade = Ticker()
     /// Where the box's top-left corner is on the screen (screen points, y upwards), as the panel's left and top.
     private(set) var origin = NSPoint.zero
-    lazy var snap = SnapDrag(get: { [unowned self] in self.origin }, set: { [unowned self] p in self.move(to: p) })
-
+    /// Where the pointer is, in screen points (a trial's own pointer when there is one); the tests set it.
+    var pointer: () -> NSPoint = { trialPointer ?? NSEvent.mouseLocation }
     init(queue: PasteQueue, store: Store) {
         self.queue = queue
         self.store = store
@@ -41,12 +41,14 @@ final class Deck: NSObject, NSDraggingSource {
         view.close.onClick = { [weak self] in self?.queue.close() }
     }
 
-    // MARK: places
+    // MARK: its place
 
-    var placeKey: String { "deckplace." }
-    func placeFor(_ s: NSScreen) -> Place { store.setting(placeKey + screenKey(s)).flatMap(Place.init) ?? .bottomRight }
+    /// The bottom right, always, where the screenshot thumbnail sits (his word 2026-11-15 11:25, his trial of f1be23d:
+    /// «скриншоты тоже нельзя перетаскивать… пускай оно просто будет справа, снизу… в самом неприметном углу»). The
+    /// drag to nine places that 0.7 had is gone: he could not make it move and does not want it.
+    func placeFor(_ s: NSScreen) -> Place { .bottomRight }
 
-    /// The nine places of the box on a screen: one margin from the visible frame's edges, the middles centred.
+    /// The nine places of the box on a screen (one is used): one margin from the visible frame's edges.
     func places(on s: NSScreen) -> Places {
         let v = s.visibleFrame, b = deckBox
         return Places(tops: [v.maxY - deckGap, (v.midY + b.height / 2).rounded(), v.minY + deckGap + b.height],
@@ -59,11 +61,8 @@ final class Deck: NSObject, NSDraggingSource {
                                width: deckBox.width + 2 * deckMargin, height: deckBox.height + 2 * deckMargin), display: true)
     }
 
-    /// Taken by its edges: the shared soft-magnet drag; the place is remembered for this screen.
-    func drag() {
-        guard let s = screen else { return }
-        if let p = snap.track(window, places: places(on: s)) { store.setSetting(placeKey + screenKey(s), p.rawValue) }
-    }
+    /// The window's origin when the deck sits at its place.
+    private var restOrigin: NSPoint { NSPoint(x: origin.x - deckMargin, y: origin.y - deckBox.height - deckMargin) }
 
     // MARK: the queue's changes
 
@@ -80,7 +79,7 @@ final class Deck: NSObject, NSDraggingSource {
     private func appear() {
         let mouse = NSEvent.mouseLocation
         screen = trialScreen() ?? NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
-        motion.stop(); snap.ticker.stop(); swipeTicker.stop(); swipe = nil
+        motion.stop(); endCapture(); flingTicker.stop(); fling = nil; scroll = nil
         for (_, c) in cards { c.removeFromSuperview() }
         cards = []
         rebuild(animated: false)
@@ -187,58 +186,56 @@ final class Deck: NSObject, NSDraggingSource {
     }
     private var flying: [Ticker] = []
 
-    // MARK: swiped away
+    // MARK: flung off
 
-    /// A two-finger swipe sideways on the deck sends it off that edge and closes the queue (his word 2026-11-15 10:47,
-    /// as the screenshot thumbnail goes when swiped): the deck follows the fingers; let go far or fast enough, it slides
-    /// off; otherwise it comes back. Up and down are left alone.
-    private var swipe: (dx: CGFloat, horizontal: Bool?, base: NSPoint, speed: CGFloat, at: TimeInterval)?
-    private let swipeTicker = Ticker()
+    /// Sent off its edge, as the screenshot thumbnail: two fingers on the trackpad, or the mouse pressed on it and
+    /// moved, to the right (his word 2026-11-15 10:47, and 11:25: «смахивалась не только трекпадом, а ещё и просто
+    /// мышкой»). The deck follows the hand to the right, and a little (a quarter) to the left; let go far enough (40 pt)
+    /// or fast enough (300 pt/s over the last 0.1 s), it slides off the right edge and the queue closes; otherwise it
+    /// comes back in 0.2 s. His trial of f1be23d (11:25): it wandered left and right and rarely went, because the deck
+    /// slid away from under the pointer and the rest of the gesture went to the window now under it; the rest of a
+    /// trackpad gesture is now taken wherever it goes (an event monitor, scroll events need no permission), and the
+    /// deck always comes back to its place, never to where it had been dragged.
+    private var fling: (dx: CGFloat, samples: [(CGFloat, TimeInterval)])?
+    private let flingTicker = Ticker()
 
-    func scrolled(_ e: NSEvent) {
-        guard e.hasPreciseScrollingDeltas, e.momentumPhase == [], queue.isOpen else { return }
-        if e.phase == .began || swipe == nil {
-            guard e.phase == .began || e.phase == .changed else { return }
-            swipeTicker.stop()
-            swipe = (0, nil, window.frame.origin, 0, e.timestamp)
-        }
-        guard var s = swipe else { return }
-        // The way the fingers moved: with natural scrolling the deltas already follow them.
-        let fx = e.isDirectionInvertedFromDevice ? e.scrollingDeltaX : -e.scrollingDeltaX
-        let fy = e.isDirectionInvertedFromDevice ? e.scrollingDeltaY : -e.scrollingDeltaY
-        if e.phase == .began || e.phase == .changed {
-            if s.horizontal == nil, abs(fx) + abs(fy) > 0 { s.horizontal = abs(fx) > abs(fy) }
-            if s.horizontal == true {
-                s.dx += fx
-                let dt = e.timestamp - s.at
-                if dt > 0 { s.speed = fx / CGFloat(dt) }
-                s.at = e.timestamp
-                window.setFrameOrigin(NSPoint(x: s.base.x + s.dx, y: s.base.y))
-            }
-            swipe = s
-            return
-        }
-        swipe = nil
-        guard s.horizontal == true else { return }
-        let fast = abs(s.speed) > 500 && abs(s.dx) > 12 && (s.speed > 0) == (s.dx > 0)
-        if e.phase == .ended, abs(s.dx) > 60 || fast { swipeOff(right: s.dx > 0, from: s.base) } else { swipeBack(to: s.base) }
+    private func flingBegin() {
+        flingTicker.stop()
+        fling = (0, [])
     }
 
-    private func swipeBack(to base: NSPoint) {
-        let from = window.frame.origin
-        swipeTicker.run { [weak self] t in
+    private func flingTo(_ dx: CGFloat, at t: TimeInterval) {
+        guard var f = fling else { return }
+        f.dx = dx
+        f.samples.append((dx, t))
+        f.samples.removeAll { t - $0.1 > 0.1 }
+        fling = f
+        window.setFrameOrigin(NSPoint(x: restOrigin.x + (dx >= 0 ? dx : dx / 4), y: restOrigin.y))
+    }
+
+    private func flingEnd() {
+        guard let f = fling else { return }
+        fling = nil
+        var speed: CGFloat = 0
+        if let a = f.samples.first, let b = f.samples.last, b.1 - a.1 > 0.005 { speed = (b.0 - a.0) / CGFloat(b.1 - a.1) }
+        if f.dx > 40 || (speed > 300 && f.dx > 8) { flingOff() } else { flingBack() }
+    }
+
+    private func flingBack() {
+        let from = window.frame.origin, to = restOrigin
+        flingTicker.run { [weak self] t in
             let k = CGFloat(Curve.bezier(min(1, t / 0.2), 0, 0, 0.58, 1))
-            self?.window.setFrameOrigin(NSPoint(x: from.x + (base.x - from.x) * k, y: base.y))
+            self?.window.setFrameOrigin(NSPoint(x: from.x + (to.x - from.x) * k, y: to.y))
             return t < 0.2
         }
     }
 
-    /// Off the edge it was swiped towards, accelerating as a pasted card leaves; then the queue closes.
-    private func swipeOff(right: Bool, from base: NSPoint) {
-        let f = window.frame, edges = (screen ?? window.screen)?.frame ?? f
-        let start = f.origin.x, d = right ? edges.maxX - f.minX : -(f.maxX - edges.minX)
-        let dur = 0.23 * max(1, (Double(abs(d)) / 200).squareRoot())
-        swipeTicker.run { [weak self] t in
+    /// Off the right edge, accelerating as a pasted card leaves; then the queue closes.
+    private func flingOff() {
+        let f = window.frame, edge = (screen ?? window.screen)?.frame.maxX ?? f.maxX
+        let start = f.minX, d = edge - f.minX
+        let dur = 0.23 * max(1, (Double(d) / 200).squareRoot())
+        flingTicker.run { [weak self] t in
             guard let self else { return false }
             let k = CGFloat(Curve.bezier(min(1, t / dur), 0.42, 0, 1, 1))
             self.window.setFrameOrigin(NSPoint(x: start + d * k, y: f.minY))
@@ -248,6 +245,95 @@ final class Deck: NSObject, NSDraggingSource {
             }
             return t < dur
         }
+    }
+
+    // The trackpad: a scroll gesture that starts on the deck and goes sideways.
+    private var scroll: (dx: CGFloat, horizontal: Bool?)?
+    private var localMonitor: Any?, globalMonitor: Any?
+    private var gesture = 0
+
+    func scrolled(_ e: NSEvent) {
+        guard e.hasPreciseScrollingDeltas, e.momentumPhase == [], queue.isOpen else { return }
+        if e.phase == .began {
+            scroll = (0, nil)
+            beginCapture()
+        }
+        guard var s = scroll else { return }
+        // The way the fingers moved: with natural scrolling the deltas follow them, without it they oppose them.
+        let fx = e.isDirectionInvertedFromDevice ? e.scrollingDeltaX : -e.scrollingDeltaX
+        let fy = e.isDirectionInvertedFromDevice ? e.scrollingDeltaY : -e.scrollingDeltaY
+        if e.phase == .began || e.phase == .changed {
+            if s.horizontal == nil, abs(fx) + abs(fy) > 0 {
+                s.horizontal = abs(fx) > abs(fy)
+                if s.horizontal == true { flingBegin() } else { endCapture() }
+            }
+            if s.horizontal == true { s.dx += fx; flingTo(s.dx, at: e.timestamp) }
+            scroll = s
+            return
+        }
+        scroll = nil
+        endCapture()
+        if s.horizontal == true {
+            if e.phase == .ended { flingEnd() } else { fling = nil; flingBack() }
+        }
+    }
+
+    /// The rest of the gesture, wherever the pointer is now: our own windows' events stop here (they would come twice),
+    /// other apps' are watched; both end with the gesture, or after a second with none.
+    private func beginCapture() {
+        endCapture()
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] e in
+            guard let self, self.scroll != nil else { return e }
+            self.scrolled(e)
+            return nil
+        }
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .scrollWheel) { [weak self] e in self?.scrolled(e) }
+        gesture += 1
+        let g = gesture
+        // A gesture whose end never came (the trackpad let go mid-way): after 3 s it is over and the deck goes back.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            guard let self, self.gesture == g, self.scroll != nil else { return }
+            self.scroll = nil
+            self.endCapture()
+            if self.fling != nil { self.fling = nil; self.flingBack() }
+        }
+    }
+
+    private func endCapture() {
+        if let m = localMonitor { NSEvent.removeMonitor(m); localMonitor = nil }
+        if let m = globalMonitor { NSEvent.removeMonitor(m); globalMonitor = nil }
+    }
+
+    // The mouse: pressed on the deck and moved to the right (from the front card, any other way drags the item out).
+    private var press: (at: NSPoint, onCard: Bool, flinging: Bool)?
+
+    func mouseDown(onCard: Bool) {
+        flingTicker.stop()
+        press = (pointer(), onCard, false)
+    }
+
+    /// Returns true when the press became a drag of the item out (the view starts it).
+    func mouseDragged(_ e: NSEvent) -> Bool {
+        guard var p = press else { return false }
+        let now = pointer(), dx = now.x - p.at.x, dy = now.y - p.at.y
+        if !p.flinging {
+            guard hypot(dx, dy) >= 3 else { return false }
+            if dx > 0 && dx >= abs(dy) || !p.onCard {
+                p.flinging = true; press = p
+                flingBegin()
+            } else {
+                press = nil
+                return true
+            }
+        }
+        flingTo(dx, at: e.timestamp)
+        return false
+    }
+
+    func mouseUp() {
+        guard let p = press else { return }
+        press = nil
+        if p.flinging { flingEnd() }
     }
 
     // MARK: the front card dragged out
@@ -338,21 +424,15 @@ final class DeckView: NSView {
         return bounds.insetBy(dx: -deckMargin, dy: -deckMargin).contains(q) ? self : nil
     }
 
-    private var down: (NSPoint, Bool)?   // where, and whether on the front card
     override func mouseDown(with e: NSEvent) {
         guard let o = owner else { return }
         let q = convert(e.locationInWindow, from: nil)
-        if o.cardFrame(0).insetBy(dx: 0, dy: 0).contains(q) && q.y > o.cardFrame(0).minY + 2 { down = (q, true); return }
-        o.drag()
+        o.mouseDown(onCard: o.cardFrame(0).contains(q) && q.y > o.cardFrame(0).minY + 2)
     }
     override func mouseDragged(with e: NSEvent) {
-        guard let (p, onCard) = down, onCard else { return }
-        let q = convert(e.locationInWindow, from: nil)
-        guard hypot(q.x - p.x, q.y - p.y) >= 3 else { return }
-        down = nil
-        owner?.dragOut(event: e)
+        if owner?.mouseDragged(e) == true { owner?.dragOut(event: e) }
     }
-    override func mouseUp(with e: NSEvent) { down = nil }
+    override func mouseUp(with e: NSEvent) { owner?.mouseUp() }
     override func scrollWheel(with e: NSEvent) { owner?.scrolled(e) }
 }
 

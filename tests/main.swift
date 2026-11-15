@@ -1280,35 +1280,63 @@ func shelfOnScreen() {
         _ = t.flatMap { pb.data(forType: $0) }
         _ = wait(0.6) { false }
         check(q.left == 2 && d.view.badge.number == 2, "a paste: two left (\(q.left))")
-        // Dragged by its edge to the top left (the drag's steps, as a hand would).
-        let ps = d.places(on: s)
-        d.snap.begin(ps); d.snap.move(ps.point(.topLeft), ps)
-        if let p = d.snap.end() { st.setSetting(d.placeKey + screenKey(s), p.rawValue) }
-        _ = wait(0.6) { false }
-        check(d.origin == ps.point(.topLeft) && d.placeFor(s) == .topLeft, "dragged to the top left: there, remembered")
-        // Two fingers sideways on the trackpad (his word 2026-11-15 10:47): a short swipe comes back, a long one sends the
-        // deck off the edge and closes the queue.
-        func swipe(_ steps: [Double]) {
+        // Two fingers on the trackpad (his words 2026-11-15 10:47 and 11:25): the deck follows to the right; a short
+        // swipe comes back, a long one to the right sends it off the edge and closes the queue, one to the left comes back.
+        // `right` is the way the fingers go: the deltas follow them with natural scrolling and oppose them without.
+        func swipe(_ steps: [Double], end: Int64 = 4) {
             var t = ProcessInfo.processInfo.systemUptime
-            for (k, dx) in steps.enumerated() {
+            for (k, v) in steps.enumerated() {
+                guard let probe = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: 0, wheel2: 0, wheel3: 0),
+                      let inverted = NSEvent(cgEvent: probe)?.isDirectionInvertedFromDevice else { continue }
+                let dx = inverted ? v : -v
                 guard let ce = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: 0, wheel2: Int32(dx), wheel3: 0) else { continue }
                 ce.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
                 ce.setDoubleValueField(.scrollWheelEventPointDeltaAxis2, value: dx)
-                ce.setIntegerValueField(.scrollWheelEventScrollPhase, value: k == 0 ? 1 : (k == steps.count - 1 ? 4 : 2))
+                ce.setIntegerValueField(.scrollWheelEventScrollPhase, value: k == 0 ? 1 : (k == steps.count - 1 ? end : 2))
                 t += 0.016; ce.timestamp = CGEventTimestamp(t * 1e9)
                 if let e = NSEvent(cgEvent: ce) { d.view.scrollWheel(with: e) }
                 _ = wait(0.016) { false }
             }
         }
         let rest = d.window.frame.origin
-        swipe([0, 4, 4, 4, 0])
+        swipe([0, 4, 4, 0])
         _ = wait(0.4) { false }
-        check(q.isOpen && d.window.frame.origin == rest, "a short swipe: the deck comes back, the queue stays (\(d.window.frame.origin) vs \(rest))")
+        check(q.isOpen && d.window.frame.origin == rest, "a short slow swipe: the deck comes back, the queue stays (\(d.window.frame.origin) vs \(rest))")
+        swipe([0] + Array(repeating: -14, count: 10) + [0])
+        _ = wait(0.4) { false }
+        check(q.isOpen && d.window.frame.origin == rest, "a long swipe to the left: comes back (\(d.window.frame.origin))")
+        swipe([0, 6, 6, 6], end: 2)   // a gesture whose end never comes
+        check(d.window.frame.origin.x > rest.x + 10, "mid-swipe the deck follows the fingers to the right")
+        _ = wait(3.5) { false }
+        check(q.isOpen && d.window.frame.origin == rest, "a gesture that never ends: back after 3 s")
         swipe([0] + Array(repeating: 14, count: 10) + [0])
-        _ = wait(0.6) { false }
-        check(!q.isOpen && !d.window.isVisible, "a long swipe: off the edge, the queue closed")
+        _ = wait(0.7) { false }
+        check(!q.isOpen && !d.window.isVisible, "a long swipe to the right: off the edge, the queue closed")
+        // The mouse: pressed on the deck and moved to the right, let go; from the front card leftwards is a drag out.
+        sh.open(); q.add([ids[0], ids[1]]); _ = wait(0.6) { false }
+        var at = NSPoint(x: 500, y: 500)
+        d.pointer = { at }
+        func dragged() -> Bool {
+            let e = NSEvent.mouseEvent(with: .leftMouseDragged, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                       windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+            return d.mouseDragged(e)
+        }
+        d.mouseDown(onCard: true); at.x -= 10
+        check(dragged(), "from the card to the left: the item is dragged out")
+        d.mouseUp()
+        at = NSPoint(x: 500, y: 500)
+        d.mouseDown(onCard: true)
+        for _ in 0..<8 { at.x += 4; _ = dragged(); _ = wait(0.02) { false } }
+        d.mouseUp(); _ = wait(0.4) { false }
+        check(q.isOpen && d.window.frame.origin == rest, "the mouse a little to the right, slowly: comes back")
+        at = NSPoint(x: 500, y: 500)
+        d.mouseDown(onCard: true)
+        for _ in 0..<8 { at.x += 15; _ = dragged(); _ = wait(0.016) { false } }
+        d.mouseUp(); _ = wait(0.7) { false }
+        check(!q.isOpen && !d.window.isVisible, "the mouse flung to the right: off the edge, the queue closed")
+        d.pointer = { NSEvent.mouseLocation }
         sh.open(); _ = wait(0.6) { false }
-        check(d.window.isVisible && d.origin == ps.point(.topLeft), "opened again: back at its place")
+        check(d.window.isVisible && d.window.frame.origin == rest, "opened again: back at its place, the bottom right")
     }
     sh.close(); _ = wait(0.4) { false }
     check(!d.window.isVisible, "closed")
