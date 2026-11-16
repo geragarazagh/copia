@@ -271,17 +271,116 @@ func unit() {
     Ticker.manual = false
     try? FileManager.default.removeItem(at: hdir)
 
-    // The seven places: the middle on the visible frame's centre; top, bottom, left, right inside it with one margin.
-    for sc in NSScreen.screens {
-        let t = restingTop(.middle, height: 400, on: sc), v = sc.visibleFrame
-        check(abs((t - 200) - v.midY) <= 0.5, "middle of \(sc.localizedName): centre \(t - 200) vs \(v.midY)")
-        check(restingTop(.top, height: 400, on: sc) <= v.maxY - screenGap && restingTop(.bottomLeft, height: 400, on: sc) - 400 == v.minY + screenGap,
-              "top and bottom inside the visible frame")
-        check(restingLeft(.topLeft, on: sc) == v.minX + screenGap && restingLeft(.bottomRight, on: sc) + panelSize.width == v.maxX - screenGap
-              && abs(restingLeft(.middle, on: sc) + panelSize.width / 2 - v.midX) <= 0.5, "left, centre and right columns")
+    // The fifteen places (place.swift, PlaceGrid; his pick 2026-11-16): on Grids' lines on every kind of screen.
+    // Screens as (frame, visible frame) in AppKit points: the 16-inch Pro (his), the 14-inch Pro, the 13-inch Air, an
+    // old 13-inch with a 24 pt menu bar and the Dock at the bottom, a 1280 × 800 with the Dock on the left, a 27-inch
+    // external to the right and above, a screen barely wider and taller than the panel, and the real screens here.
+    var screens: [(String, NSRect, NSRect)] = [
+        ("16-inch", NSRect(x: 0, y: 0, width: 1728, height: 1117), NSRect(x: 0, y: 0, width: 1728, height: 1085)),
+        ("14-inch", NSRect(x: 0, y: 0, width: 1512, height: 982), NSRect(x: 0, y: 0, width: 1512, height: 950)),
+        ("Air 13", NSRect(x: 0, y: 0, width: 1470, height: 956), NSRect(x: 0, y: 0, width: 1470, height: 919)),
+        ("Dock bottom", NSRect(x: 0, y: 0, width: 1440, height: 900), NSRect(x: 0, y: 76, width: 1440, height: 800)),
+        ("Dock left", NSRect(x: 0, y: 0, width: 1280, height: 800), NSRect(x: 64, y: 0, width: 1216, height: 776)),
+        ("external", NSRect(x: 1728, y: -323, width: 2560, height: 1440), NSRect(x: 1728, y: -323, width: 2560, height: 1415)),
+        ("tiny", NSRect(x: 0, y: 0, width: 660, height: 600), NSRect(x: 0, y: 0, width: 660, height: 576)),
+    ]
+    for sc in NSScreen.screens { screens.append((sc.localizedName, sc.frame, sc.visibleFrame)) }
+    for (name, f, v) in screens {
+        let g = PlaceGrid(frame: f, visible: v)
+        func onGrid(_ x: CGFloat) -> Bool { abs(x / gridStep - (x / gridStep).rounded()) < 0.001 }
+        let ls = g.lefts.map { $0 - f.minX }   // from the screen's left, as Grids counts
+        let t0 = f.maxY - g.topEdge, m = f.maxY - g.middleEdge, b0 = f.maxY - g.bottomEdge
+        check(zip(ls, ls.dropFirst()).allSatisfy { $0 <= $1 }, "\(name): columns left to right \(ls)")
+        check(onGrid(ls[0]) && onGrid(ls[4] + panelSize.width) && onGrid(t0) && onGrid(m) && onGrid(b0),
+              "\(name): sides, top, middle and bottom on Grids' 8 pt lines: \(ls) \(t0) \(m) \(b0)")
+        // The centre column on Grids' red 1/2 line; the two between on the centre's own lattice, so on the 8 pt lines too
+        // wherever the centre is (a screen whose half is a whole multiple of 8 beyond the panel's: all but the 14-inch).
+        check(ls[2] + panelSize.width / 2 == f.width / 2 || ls[0] == ls[4], "\(name): centre column on the half line")
+        check(onGrid(ls[2] - ls[1]) && onGrid(ls[3] - ls[2]) && (!onGrid(ls[2]) || (onGrid(ls[1]) && onGrid(ls[3]))),
+              "\(name): the columns between on the grid")
+        let steps = zip(ls, ls.dropFirst()).map { $1 - $0 }
+        check(ls[0] == ls[4] || steps.max()! - steps.min()! <= 2 * gridStep + abs(ls[2] - (ls[0] + ls[4]) / 2) * 2,
+              "\(name): the five even, \(steps)")
+        // Inside the visible frame, at least edgeRoom from its edges and less than a grid step more.
+        let vx0 = v.minX - f.minX, vx1 = v.maxX - f.minX, vy0 = f.maxY - v.maxY, vy1 = f.maxY - v.minY
+        check(ls[0] >= vx0 + edgeRoom && ls[0] < vx0 + edgeRoom + gridStep || ls[0] == ls[4], "\(name): left side \(ls[0] - vx0) in")
+        check(ls[4] + panelSize.width <= vx1 - edgeRoom && ls[4] + panelSize.width > vx1 - edgeRoom - gridStep || ls[0] == ls[4],
+              "\(name): right side \(vx1 - ls[4] - panelSize.width) in")
+        check(t0 >= vy0 + edgeRoom && t0 < vy0 + edgeRoom + gridStep && b0 <= vy1 - edgeRoom && b0 > vy1 - edgeRoom - gridStep,
+              "\(name): top \(t0 - vy0) under the menu bar, bottom \(vy1 - b0) over the visible frame's bottom")
+        // The middle row: a full panel's centre on the screen's half line, within half a grid step; it never leaves
+        // the room between the top and bottom rows.
+        let full = min(panelSize.height, b0 - t0)
+        check(m >= t0 && m + full <= b0 && (abs(m + full / 2 - f.height / 2) <= gridStep / 2 || m == t0 || m + full == b0),
+              "\(name): middle row \(m), a full panel's centre \(m + full / 2) on the half line \(f.height / 2)")
+        check(g.room(.top) == b0 - t0 && g.room(.middle) == b0 - m && g.room(.bottom) == b0 - t0, "\(name): the room at each row")
+        // Fifteen distinct places for a full panel (one column or one row only when the screen leaves no room).
+        let pts = Set(Place.allCases.map { "\(g.places(height: full).point($0))" })
+        check(pts.count == 15 || ls[0] == ls[4] || t0 == m, "\(name): \(pts.count) distinct places")
     }
-    check(Place.allCases.count == 9 && Place.at(.middle, .left) == .middleLeft && Place(rawValue: "middle") == .middle && Place(rawValue: "top") == .top,
-          "nine places; 0.4's stored «top», «middle», «bottom» still read")
+    // His screen, by the numbers: 8, 272, 544, 816, 1080 across (the panel's left edge); 40, 288 and 1112 down.
+    let his = PlaceGrid(frame: NSRect(x: 0, y: 0, width: 1728, height: 1117), visible: NSRect(x: 0, y: 0, width: 1728, height: 1085))
+    check(his.lefts == [8, 272, 544, 816, 1080] && 1117 - his.topEdge == 40 && 1117 - his.middleEdge == 288 && 1117 - his.bottomEdge == 1112,
+          "his 16-inch: \(his.lefts), \(1117 - his.topEdge), \(1117 - his.middleEdge), \(1117 - his.bottomEdge)")
+    check(Place.allCases.count == 15 && Place.at(.middle, .left) == .middleLeft && Place.at(.bottom, .innerRight) == .bottomInnerRight
+          && ["top", "middle", "bottom", "topLeft", "topRight", "middleLeft", "middleRight", "bottomLeft", "bottomRight"].allSatisfy { Place(rawValue: $0) != nil }
+          && Place(rawValue: "top")!.column == .centre && Place(rawValue: "bottomRight")!.column == .right,
+          "fifteen places; the nine stored by 0.7-0.1 and 0.4's three still read as the same places")
+    check(Set(Place.allCases.map(\.title)).count == 15 && Place.top.title == "Top Center" && Place.middle.title == "Center"
+          && Place.bottomInnerLeft.title == "Bottom, Left of Center", "fifteen names: \(Place.allCases.map(\.title))")
+
+    // What holds when the list changes (his word: nothing jumps): the top and middle rows keep the top edge, the bottom
+    // row its bottom edge; an opening puts the panel by the same edge whatever the list holds; at the bottom the field
+    // holds while a search is typed.
+    if let main = NSScreen.main {
+        let adir = tmpDir("anchor")
+        let st = try! Store(dir: adir)
+        for i in 0..<8 { let (e, it) = prepare(textSnap("anchor \(i)"), dir: adir, at: now.addingTimeInterval(Double(i)))!; st.add(e, it) }
+        let ac = PanelController(store: st, monitor: nil, onScreen: false)
+        ac.screen = main
+        let g = PlaceGrid(main)
+        for p in Place.allCases {
+            ac.setPlace(p, on: main)   // remembered; not shown, so nothing moves yet
+            ac.reload(); ac.placeAtRest()
+            let h8 = ac.height, top8 = ac.top
+            check(ac.left == g.left(p.column) && (p.row == .bottom ? top8 - h8 == g.bottomEdge : top8 == g.top(p.row, height: h8)),
+                  "\(p.rawValue): opened at its place")
+            // Five of the eight deleted (the night variants' case), then opened again.
+            ac.sel.clear(); for id in ac.shown.prefix(5).map(\.id) { ac.sel.toggle(id) }
+            ac.deleteSelection()
+            let held = p.row == .bottom ? ac.top - ac.height == g.bottomEdge : ac.top == top8
+            check(ac.height < h8 && held, "\(p.rawValue): five deleted, the \(p.row == .bottom ? "bottom" : "top") edge stays")
+            let top3 = ac.top
+            ac.placeAtRest()
+            check(ac.top == top3 && ac.left == g.left(p.column), "\(p.rawValue): opened again, not a point moved")
+            _ = ac.undoDelete(); ac.reload(); ac.placeAtRest()
+            check(ac.top == top8 && ac.height == h8, "\(p.rawValue): undone, back as it was")
+        }
+        // At the bottom, typing: the field holds; cleared, the bottom edge is back on its line.
+        ac.setPlace(.bottom, on: main); ac.reload(); ac.placeAtRest()
+        let topB = ac.top
+        ac.view.field.stringValue = "anchor 3"; ac.filter()
+        check(ac.top == topB && ac.height < topB - g.bottomEdge, "bottom row, a search typed: the field stays, the bottom comes up")
+        ac.view.field.stringValue = "/"; ac.filter()
+        check(ac.top >= topB && ac.top - ac.height >= g.bottomEdge, "bottom row, «/»: the kinds fit above the bottom line")
+        ac.view.field.stringValue = ""; ac.filter()
+        check(ac.top == topB && ac.top - ac.height == g.bottomEdge, "bottom row, search cleared: back on the bottom line")
+        // A copy arriving while open: the held edge stays (top row: the top; bottom row: the bottom).
+        for p in [Place.top, .middleInnerLeft, .bottomRight] {
+            ac.setPlace(p, on: main); ac.reload(); ac.placeAtRest()
+            let t = ac.top, b = ac.top - ac.height
+            let (e, it) = prepare(textSnap("arrived \(p)"), dir: adir, at: Date())!; st.add(e, it); ac.reload()
+            check(p.row == .bottom ? ac.top - ac.height == b : ac.top == t, "\(p.rawValue): a new copy, the held edge stays")
+        }
+        // Many items: never taller than Spotlight's 546 or than the room at the row.
+        for i in 0..<120 { let (e, it) = prepare(textSnap("many \(i)"), dir: adir, at: now.addingTimeInterval(100 + Double(i)))!; st.add(e, it) }
+        for p in Place.allCases {
+            ac.setPlace(p, on: main); ac.reload(); ac.placeAtRest()
+            check(ac.height == min(panelSize.height, g.room(p.row)) && ac.top - ac.height >= g.bottomEdge && ac.top <= g.topEdge,
+                  "\(p.rawValue), 129 items: \(ac.height) tall, inside the room")
+        }
+        try? FileManager.default.removeItem(at: adir)
+    }
 
     // Drag (place.swift, 0.7): the panel follows the hand; each place is a soft magnet (caught within 16 pt, held until
     // 30 pt, both by a 120 ms slide); let go between places, it slides to the nearest; at rest always exact.
@@ -327,7 +426,7 @@ func unit() {
         // Let go between places: it slides to the nearest one, exact.
         dc.dragBegin(places: ps)
         let mid = ps.point(.middle), br = ps.point(.bottomRight)
-        dc.dragMove(raw: NSPoint(x: mid.x + (br.x - mid.x) * 0.7, y: mid.y + (br.y - mid.y) * 0.7), places: ps)
+        dc.dragMove(raw: NSPoint(x: mid.x + (br.x - mid.x) * 0.85, y: mid.y + (br.y - mid.y) * 0.85), places: ps)
         frames(10)
         check(!isPlace(), "between the places while the hand holds it there")
         dc.dragEnd()
@@ -349,8 +448,8 @@ func unit() {
         check(NSPoint(x: dc.left, y: dc.top) == ps.point(.topLeft), "never past the outermost places")
         dc.dragEnd()
         // The middle row has all three places since 0.7.
-        check(ps.at(NSPoint(x: ps.lefts[0], y: ps.tops[1])) == .middleLeft && ps.at(NSPoint(x: ps.lefts[2], y: ps.tops[1])) == .middleRight,
-              "the middle row has its left and right places (0.7)")
+        check(ps.at(NSPoint(x: ps.lefts[0], y: ps.tops[1])) == .middleLeft && ps.at(NSPoint(x: ps.lefts[4], y: ps.tops[1])) == .middleRight
+              && ps.at(NSPoint(x: ps.lefts[1], y: ps.tops[2])) == .bottomInnerLeft, "the middle row has its sides, the rows their inner columns")
         // Settings' Position on Screen sets the same place.
         dc.setPlace(.bottom, on: main)
         check(dc.placeFor(main) == .bottom, "Position on Screen sets the place")
@@ -1219,11 +1318,10 @@ func render(app: String, theme: String, out: String, mode: String) {
     root.addSubview(bg)
     pc.view.frame.origin = NSPoint(x: (SW - panelSize.width) / 2, y: ((SH - pc.view.frame.height) / 2).rounded())
     // COPIA_RENDER_PLACE: the panel where the app puts it on a 16-inch screen (menu bar 32 pt, Dock hidden), in this
-    // flipped picture: 38 pt from the top, 6 pt from the sides and the bottom (place.swift).
+    // flipped picture (place.swift, PlaceGrid).
     func origin(_ p: Place, _ h: CGFloat) -> NSPoint {
-        let x: CGFloat = p.column == .left ? 6 : p.column == .right ? SW - 6 - panelSize.width : (SW - panelSize.width) / 2
-        let y: CGFloat = p.row == .top ? 38 : p.row == .bottom ? SH - 6 - h : (32 + (SH - 32) / 2 - h / 2).rounded()
-        return NSPoint(x: x, y: y)
+        let g = PlaceGrid(frame: NSRect(x: 0, y: 0, width: SW, height: SH), visible: NSRect(x: 0, y: 0, width: SW, height: SH - 32))
+        return NSPoint(x: g.left(p.column), y: SH - g.top(p.row, height: h))
     }
     let place = ProcessInfo.processInfo.environment["COPIA_RENDER_PLACE"].flatMap(Place.init)
     if let place { pc.view.frame.origin = origin(place, pc.view.frame.height) }
@@ -1577,7 +1675,7 @@ func panelOnScreen() {
     check(pc.window!.firstResponder === pc.view && !pc.searching, "opened: the list has the keys, no caret in the search")
     if let s = pc.screen {
         let f = pc.panelScreenRect
-        check(abs(f.width - 640) < 0.5 && abs(f.maxY - restingTop(.top, height: f.height, on: s)) < 0.5 && abs(f.midX - s.visibleFrame.midX) <= 0.5,
+        check(abs(f.width - 640) < 0.5 && abs(f.maxY - restingTop(.top, height: f.height, on: s)) < 0.5 && abs(f.midX - s.frame.midX) <= 0.5,
               "opened top centre, 640 wide, at Spotlight's top: \(f) on \(s.frame), visible \(s.visibleFrame)")
         check(f.height <= 546.5, "at most Spotlight's height: \(f.height)")
     }
@@ -1627,7 +1725,59 @@ func panelOnScreen() {
     pc.show(); _ = wait(0.2) { false }
     press("\r", 36); _ = wait(0.3) { !pc.isVisible }
     check(!pc.isVisible && (pb.pasteboardItems?.count ?? 0) >= 1, "Return with nothing picked copies the first row, as Spotlight's top hit")
+
+    // The fifteen places on a real screen (2026-11-16): opened at each, the window where PlaceGrid says; then twelve of
+    // the seventeen rows deleted by ⌫ and the window's frame read through the whole 200 ms of the change: the held edge
+    // (top for the top and middle rows, bottom for the bottom row) never moves a point; closed and opened again, the
+    // panel comes back exactly where it was (0.1 dropped the middle row 120 pt here); ⌘Z, and it is as at first.
+    if let s = pc.screen {
+        let g = PlaceGrid(s)
+        var worst: CGFloat = 0
+        for p in Place.allCases {
+            pc.setPlace(p, on: s)
+            pc.show(); _ = wait(0.25) { false }
+            let f0 = pc.panelScreenRect
+            let edge0 = p.row == .bottom ? f0.minY : f0.maxY
+            check(abs(f0.minX - g.left(p.column)) < 0.5 && abs(edge0 - (p.row == .bottom ? g.bottomEdge : g.top(p.row, height: f0.height))) < 0.5,
+                  "\(p.rawValue): opened at \(f0)")
+            press("a", 0, .command)
+            for id in pc.shown.suffix(5).map(\.id) { pc.sel.toggle(id) }   // keep five
+            pc.selectionChanged()
+            press("\u{7f}", 51)
+            var moved: CGFloat = 0, frames = 0
+            let t0 = Date()
+            while Date().timeIntervalSince(t0) < 0.35 {
+                let f = pc.window!.frame.insetBy(dx: panelMargin, dy: panelMargin)
+                moved = max(moved, abs((p.row == .bottom ? f.minY : f.maxY) - edge0)); frames += 1
+                _ = wait(1.0 / 120) { false }
+            }
+            let f1 = pc.panelScreenRect
+            worst = max(worst, moved)
+            check(pc.shown.count == 5 && f1.height < f0.height && moved < 0.5,
+                  "\(p.rawValue): twelve deleted, \(Int(f0.height)) → \(Int(f1.height)) tall, the held edge moved \(moved) pt over \(frames) reads")
+            press("\u{1b}", 53); press("\u{1b}", 53); _ = wait(0.3) { !pc.isVisible }
+            pc.show(); _ = wait(0.25) { false }
+            check(pc.panelScreenRect == f1, "\(p.rawValue): opened again, the same frame \(pc.panelScreenRect)")
+            press("z", 6, .command); _ = wait(0.3) { false }
+            check(pc.shown.count == 17 && pc.panelScreenRect == f0, "\(p.rawValue): ⌘Z, as at first")
+            press("\u{1b}", 53); press("\u{1b}", 53); _ = wait(0.3) { !pc.isVisible }
+        }
+        print("places on screen: the held edge moved at most \(worst) pt")
+        pc.setPlace(.standard, on: s)
+    }
     pb.releaseGlobally()
+
+    // The big window at its smallest shows Settings whole, with no scroll bar (his recording 2026-11-15 ~17:00).
+    let b = BrowserController(store: st, monitor: nil)
+    b.show(.settings); _ = wait(0.4) { false }
+    if let w = b.window {
+        w.setContentSize(w.contentMinSize); _ = wait(0.3) { false }
+        func find(_ v: NSView) -> SettingsView? { (v as? SettingsView) ?? v.subviews.lazy.compactMap(find).first }
+        let sv = w.contentView.flatMap(find)
+        check(sv?.groups.map(\.rowCount) == SettingsView.groupRows, "Settings' rows as the minimum counts them")
+        check(sv?.scrolls == false, "smallest window \(w.contentLayoutRect.size): Settings whole, no scroll bar")
+        w.close()
+    }
 }
 
 /// Return and Quick Pick paste for real (paste.swift): run in the agents' own session (cs) with TextEdit open on an empty

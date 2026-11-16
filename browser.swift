@@ -238,7 +238,14 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
         split.addSplitViewItem(mainItem)
         split.splitView.dividerStyle = .thin
         w.contentViewController = split
-        if let f = store.setting("browser.frame") { w.setFrame(NSRectFromString(f), display: false) }
+        if let f = store.setting("browser.frame") {
+            // A size saved before the minimum grew (Settings whole since 2026-11-16) comes back no smaller than it.
+            var r = NSRectFromString(f)
+            let least = w.frameRect(forContentRect: NSRect(origin: .zero, size: minSize)).size
+            if r.height < least.height { r.origin.y -= least.height - r.height; r.size.height = least.height }
+            r.size.width = max(r.width, least.width)
+            w.setFrame(r, display: false)
+        }
         else { w.setContentSize(defaultSize); w.center() }
         // Wide enough for the longest row in every language («Недавно удаленные»).
         split.splitView.setPosition(CGFloat(store.setting("browser.sidebar").flatMap(Double.init) ?? Double(Self.sidebarWidth)), ofDividerAt: 0)
@@ -267,15 +274,18 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
     /// 0.4 opened at 1100 × 680 with a fixed 620 × 380 minimum; HIG, Windows: «choose an initial size that minimizes
     /// empty areas», and a minimum where nothing overlaps). Default: the sidebar and five columns of icons, three rows
     /// under a day's title (his pick of 0.5's variants, ~19:05). Smallest: five columns too, two rows (his recording
-    /// 2026-11-15 10:33: at three or four the toolbar's search shrank to a button; 0.5-0.7 allowed three).
+    /// 2026-11-15 10:33: at three or four the toolbar's search shrank to a button; 0.5-0.7 allowed three), and never
+    /// shorter than Settings.
     func windowSizes() -> (NSSize, NSSize) {
         let n = 5
         let side = Self.sidebarWidth + 1
         let rowH = IconItem.size(side: iconSize).height, lines: CGFloat = 12
         let chrome: CGFloat = 52 + ContentController.statusH + 34 + 8 + 16   // toolbar, status bar, a day's title, insets
         let def = NSSize(width: side + IconsView.width(columns: n, iconSize: iconSize), height: chrome + 3 * rowH + 2 * lines)
+        // At least Settings whole under the toolbar (his recording 2026-11-15 ~17:00: at the smallest window Settings
+        // showed a scroll bar and was cut; dev/rules.md, section 3: the minimum fits the tallest ordinary pane).
         let min = NSSize(width: side + max(IconsView.width(columns: n, iconSize: iconSize), Self.toolbarMinimum),
-                         height: chrome + 2 * rowH + lines)
+                         height: max(chrome + 2 * rowH + lines, 52 + SettingsView.columnHeight))
         return (def, min)
     }
     static let sidebarWidth: CGFloat = 230

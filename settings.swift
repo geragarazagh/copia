@@ -116,7 +116,11 @@ final class SettingsView: FlippedLayout {
     /// What clashes, under the keys (nothing when none).
     private let warning = NSTextField(wrappingLabelWithString: "")
     private let scroll = NSScrollView()
-    private var groups: [GroupBox] = []
+    private(set) var groups: [GroupBox] = []
+    /// Rows in each group, as built in init (a test checks the two agree): the window's smallest height comes from it.
+    static let groupRows = [3, 2, 7, 1, 1]
+    /// The column's height with every group and no clash warning (place(): 24 above, 12 after each group, 12 below).
+    static var columnHeight: CGFloat { 24 + groupRows.reduce(0) { $0 + CGFloat($1) * GroupBox.rowH + 12 } + 12 }
     /// Where the warning goes: after this group.
     private var warnAfter = 2
 
@@ -159,10 +163,15 @@ final class SettingsView: FlippedLayout {
         }
         keep.target = self; keep.action = #selector(keepChanged)
         keep.isBordered = false
-        // The panel's place, as the Dock's «Position on screen»: the nine places (place.swift), also reached by
-        // dragging the panel by its edge; for the screen it opens on now (each screen keeps its own).
-        for p in Place.allCases { position.addItem(withTitle: p.title); position.lastItem?.representedObject = p.rawValue }
-        position.menu?.insertItem(.separator(), at: 3); position.menu?.insertItem(.separator(), at: 7)   // by rows
+        // The panel's place, as the Dock's «Position on screen»: the fifteen places (place.swift), also reached by
+        // dragging the panel by its edge; for the screen it opens on now (each screen keeps its own). Fifteen names
+        // alone are hard to tell apart, so each carries a small screen with the panel at its place.
+        for p in Place.allCases {
+            position.addItem(withTitle: p.title)
+            position.lastItem?.representedObject = p.rawValue
+            position.lastItem?.image = placePicture(p)
+        }
+        position.menu?.insertItem(.separator(), at: 5); position.menu?.insertItem(.separator(), at: 11)   // by rows
         position.target = self; position.action = #selector(positionChanged)
         position.isBordered = false
         clear.title = L("Clear Clipboard History…")
@@ -192,6 +201,9 @@ final class SettingsView: FlippedLayout {
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    /// The groups are taller than the room: the pane scrolls (tests).
+    var scrolls: Bool { layoutSubtreeIfNeeded(); place(); return column.frame.height > scroll.contentSize.height + 0.5 }
 
     func refresh() {
         guard let o = owner else { return }
@@ -338,6 +350,7 @@ final class GroupBox: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     var height: CGFloat { CGFloat(rows.count) * Self.rowH }
+    var rowCount: Int { rows.count }
 
     override func updateLayer() {
         layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? 0.06 : 0.035).cgColor
@@ -611,4 +624,26 @@ func makeMainMenu(settings: Selector, target: AnyObject) -> NSMenu {
     ])
     NSApp.windowsMenu = main.items.last?.submenu   // AppKit adds the window list and the system's tiling items
     return main
+}
+
+/// A place in the Position on Screen menu: a screen 20 × 13 pt and the panel in it, drawn as the places stand on a
+/// 16-inch screen (PlaceGrid), as a template so it takes the menu's own colour, light, dark or highlighted.
+func placePicture(_ p: Place) -> NSImage {
+    let size = NSSize(width: 22, height: 15)
+    let img = NSImage(size: size, flipped: true) { _ in
+        let screen = NSRect(x: 0.75, y: 0.75, width: size.width - 1.5, height: size.height - 1.5)
+        let frame = NSBezierPath(roundedRect: screen, xRadius: 2.5, yRadius: 2.5)
+        frame.lineWidth = 1.5
+        NSColor.black.withAlphaComponent(0.45).setStroke(); frame.stroke()
+        // The panel: 640 pt of 1728 wide, its full 546 of 1117 tall, inside the screen's 2 pt inset.
+        let inner = screen.insetBy(dx: 2, dy: 2)
+        let w = (inner.width * 640 / 1728 * 2).rounded() / 2, h = (inner.height * 0.42 * 2).rounded() / 2
+        let x = inner.minX + (inner.width - w) * CGFloat(p.column.rawValue) / 4
+        let y = inner.minY + (inner.height - h) * CGFloat(p.row.rawValue) / 2
+        NSColor.black.setFill()
+        NSBezierPath(roundedRect: NSRect(x: x, y: y, width: w, height: h), xRadius: 1, yRadius: 1).fill()
+        return true
+    }
+    img.isTemplate = true
+    return img
 }

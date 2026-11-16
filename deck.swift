@@ -48,11 +48,10 @@ final class Deck: NSObject, NSDraggingSource {
     /// drag to nine places that 0.7 had is gone: he could not make it move and does not want it.
     func placeFor(_ s: NSScreen) -> Place { .bottomRight }
 
-    /// The nine places of the box on a screen (one is used): one margin from the visible frame's edges.
-    func places(on s: NSScreen) -> Places {
-        let v = s.visibleFrame, b = deckBox
-        return Places(tops: [v.maxY - deckGap, (v.midY + b.height / 2).rounded(), v.minY + deckGap + b.height],
-                      lefts: [v.minX + deckGap, (v.midX - b.width / 2).rounded(), v.maxX - deckGap - b.width])
+    /// The box's top left point at the bottom right: one margin from the visible frame's edges.
+    func restPoint(on s: NSScreen) -> NSPoint {
+        let v = s.visibleFrame
+        return NSPoint(x: v.maxX - deckGap - deckBox.width, y: v.minY + deckGap + deckBox.height)
     }
 
     func move(to p: NSPoint) {
@@ -83,7 +82,7 @@ final class Deck: NSObject, NSDraggingSource {
         for (_, c) in cards { c.removeFromSuperview() }
         cards = []
         rebuild(animated: false)
-        if let s = screen { move(to: places(on: s).point(placeFor(s))) }
+        if let s = screen { move(to: restPoint(on: s)) }
         window.alphaValue = 0
         window.orderFrontRegardless()
         fade.run { [weak self] t in

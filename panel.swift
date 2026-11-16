@@ -19,9 +19,6 @@ let panelCorner: CGFloat = 22
 /// a faint straight-edged box on a light wallpaper (measured in a test machine, 2026-11-14); the shadow fades out by
 /// about 45 pt below the glass.
 let panelMargin: CGFloat = 64
-/// Space kept between the panel and the edges of the screen's visible frame. Spotlight's top sits 6 pt under the menu
-/// bar (measured: y 38 on this Mac's 32 pt menu bar); the bottom keeps the same.
-let screenGap: CGFloat = 6
 /// Spotlight's measures: the field row and the result rows 56 pt (0.4: 58 and 60 with two lines of text per row).
 let fieldH: CGFloat = 56, factsH: CGFloat = 36, rowH: CGFloat = 56, listInset: CGFloat = 8
 /// The picture of a row: Spotlight's icons are 36 pt in its 56 pt rows.
@@ -240,7 +237,7 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         for r in rows.indices { list += tableView(view.table, heightOfRow: r) + view.table.intercellSpacing.height }
         if rows.isEmpty { list = 0 }
         var limit = panelSize.height
-        if let s = screen { limit = min(limit, s.visibleFrame.height - 2 * screenGap) }
+        if let s = screen { limit = min(limit, PlaceGrid(s).room(row)) }
         // The kinds of «/» stand alone, with no facts line under them (an empty strip there read as a missing word).
         return min(limit, fieldH + 1 + list + (suggesting ? 0 : 1 + factsH))
     }
@@ -251,14 +248,19 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     var screen: NSScreen?
     private let sizeTicker = Ticker()
 
-    /// Spotlight's way: the new rows are already in place (one frame), then the bottom edge moves to the new height,
-    /// 200 ms with the system's ease, the top edge staying where it is, so the field never moves under the typing.
-    /// Should the bottom edge leave the screen (a copy arriving while the panel sits at the bottom), the top moves
-    /// up with it, just enough.
+    /// Spotlight's way: the new rows are already in place (one frame), then one edge moves to the new height, 200 ms
+    /// with the system's ease. Which edge holds is the place's row (PlaceGrid): the top and middle rows hold the top
+    /// edge, where the field is; the bottom row holds the bottom edge, but while a search is typed there its top holds
+    /// too, so the field never moves under the typing (it gives way upwards only if the rows need more room than is
+    /// left below it), and the bottom edge comes back to its line when the search is cleared.
     func fitHeight(animated: Bool) {
         let h1 = contentHeight()
         var t1 = top
-        if let s = screen, t1 - h1 < s.visibleFrame.minY + screenGap { t1 = s.visibleFrame.minY + screenGap + h1 }
+        if let s = screen {
+            let g = PlaceGrid(s)
+            if row == .bottom { t1 = typing ? max(top, g.bottomEdge + h1) : g.bottomEdge + h1 }
+            if t1 - h1 < g.bottomEdge { t1 = g.bottomEdge + h1 }   // never past the lowest line (a panel let go between places)
+        }
         guard h1 != height || t1 != top else { return }
         guard animated else { sizeTicker.stop(); setBox(height: h1, top: t1); return }
         let h0 = height, t0 = top, d = 0.2
@@ -281,6 +283,22 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
 
     /// The panel's left edge (screen points): its place's column, or wherever a drag has it.
     var left: CGFloat = 0
+    /// The row of the place it rests at (which edge holds when the height changes: fitHeight).
+    var row = Place.standard.row
+    /// A search is being typed: a query, a kind token or the kinds of «/».
+    var typing: Bool { !query.isEmpty || kindToken != nil || suggesting }
+
+    /// At the place chosen for this screen, by the place's own edges: the same at every opening whatever the list
+    /// holds, nothing centred by height (0.1 centred the middle row anew at each opening: the jump he saw).
+    func placeAtRest() {
+        let p = screen.map(placeFor) ?? .standard
+        row = p.row
+        let h = contentHeight()
+        guard let s = screen else { setBox(height: h, top: top); return }
+        let g = PlaceGrid(s)
+        left = g.left(p.column)
+        setBox(height: h, top: g.top(p.row, height: h))
+    }
 
     /// The place chosen for this screen (drag and snap, place.swift); top centre until the person moves it.
     func placeFor(_ s: NSScreen) -> Place { store.setting(placeKey + screenKey(s)).flatMap(Place.init) ?? .standard }
@@ -700,14 +718,11 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         pasteTarget = front?.processIdentifier == getpid() ? nil : front
         reload()
         view.table.scrollRowToVisible(0)
-        // On the screen with the pointer, centred across its visible frame (what the menu bar and the Dock leave), at
-        // the place the person chose for that screen: the middle by default, his pick «посередине».
+        // On the screen with the pointer, at the place the person chose for that screen (top centre until moved).
         let mouse = NSEvent.mouseLocation
         screen = trialScreen() ?? NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
         sizeTicker.stop(); settleTicker.stop()
-        let h = contentHeight()
-        if let s = screen { left = restingLeft(placeFor(s), on: s) }
-        setBox(height: h, top: screen.map { restingTop(placeFor($0), height: h, on: $0) } ?? 0)
+        placeAtRest()
         view.resetMotion()
         w.alphaValue = 0
         w.makeKeyAndOrderFront(nil)
