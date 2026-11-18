@@ -124,7 +124,7 @@ brew uninstall --zap copia
 
 ### Details
 
-- Version: 0.1.
+- Version: 0.2.
 - Bundle ID: `com.geragaraza.copia`.
 - Download: `Copia.dmg`, 1.7 MB.
 - Requires: Apple silicon, macOS 13 or later.
