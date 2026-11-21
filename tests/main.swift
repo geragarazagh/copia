@@ -806,16 +806,17 @@ func keysTests() {
     pc.sel.clear(); pc.sel.click(pc.shown[rich].id); pc.selectionChanged()
     pc.menuCopyPlain()
     check(copies.count == 2 && copies[1].1, "Copy as Plain Text joins the queue as plain text")
-    // The digits: the modifier alone held for a moment shows them; with the footer naming app and time.
+    // The digits: the modifier alone shows them; the footer does not change.
+    let footer = pc.view.facts.stringValue
     pc.flagsChanged([.command, .option])
     pc.flagsChanged(.command)
     check(!pc.showsDigits, "still held from the hot key: not at once (⌥ of ⌥⌘C let go first)")
     _ = wait(0.4) { pc.showsDigits }
-    check(pc.showsDigits && pc.sourceLine() != nil, "⌘ held: the numbers, and the footer's app and time (\(pc.sourceLine() ?? "-"))")
+    check(pc.showsDigits && pc.view.facts.stringValue == footer, "⌘ held: the numbers; the footer stays as it was")
     pc.flagsChanged([])
     check(!pc.showsDigits, "all let go: gone")
     pc.flagsChanged(.command)
-    check(pc.showsDigits && pc.sourceLine() != nil, "⌘ pressed fresh: the numbers and the source line in the same event")
+    check(pc.showsDigits && pc.view.facts.stringValue == footer, "⌘ pressed fresh: the numbers in the same event, the footer unchanged")
     pc.flagsChanged([.command, .shift])
     check(!pc.showsDigits, "another modifier added: gone")
     // «/»: the kinds as suggestions, Return picks one as a token, ⌫ on the empty field takes it away.
@@ -1290,7 +1291,7 @@ func mockSpecs() -> [(Snapshot, Date)] {
 
 
 /// The approved mockup's content, through the real capture path, into a store; the panel drawn over a desktop
-/// picture in one window under the desktop (never seen), captured with screencapture -l.
+/// picture in one window under the desktop (seen through a solid wallpaper: see below), captured with screencapture -l.
 func render(app: String, theme: String, out: String, mode: String) {
     let motion = mode == "motion"
     strings = Bundle(path: app)!
@@ -1314,7 +1315,7 @@ func render(app: String, theme: String, out: String, mode: String) {
     NSApp.appearance = NSAppearance(named: theme == "dark" ? .darkAqua : .aqua)
     let SW: CGFloat = 1728, SH: CGFloat = 1117
     let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: SW, height: SH), styleMask: [.borderless], backing: .buffered, defer: false)
-    win.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)) - 1)   // under the wallpaper: never seen
+    win.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)) - 1)   // under the wallpaper
     win.appearance = NSApp.appearance
     let root = Flipped(frame: NSRect(x: 0, y: 0, width: SW, height: SH))
     let bg = NSImageView(frame: root.bounds)
@@ -1332,6 +1333,9 @@ func render(app: String, theme: String, out: String, mode: String) {
     if let place { pc.view.frame.origin = origin(place, pc.view.frame.height) }
     root.addSubview(pc.view)
     win.contentView = root
+    // «Under the wallpaper» is NOT unseen: on his Mac (solid black wallpaper, 2026-11-21 08:52, his recording) the
+    // pictures showed through as his desktop. Off every screen screencapture -l gets nothing («could not create image»),
+    // so ./test runs the renders only on its own screen (test machine) or with COPIA_RENDER=1 when he is away.
     win.setFrame(NSRect(x: 0, y: 0, width: SW, height: SH), display: true)
     win.orderFrontRegardless()
     func shoot(_ path: String) {

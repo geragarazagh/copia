@@ -335,9 +335,9 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     }
 
     func updateFacts() {
-        if showsDigits, let line = sourceLine() {
-            view.setFacts(nil, note: line)
-        } else if suggesting {
+        // Holding Quick Pick's modifier leaves the footer alone: the source line it once showed («Finder · Today, 2:40
+        // PM») was taken out at his word 2026-11-21 («чтобы ничего не появлялось»); only the ⌘1… numbers show.
+        if suggesting {
             view.setFacts(nil, note: "")
         } else if let m = monitor, m.denied {
             view.setFacts(nil, note: L("Reading the clipboard is off: Privacy & Security > Paste from Other Apps"))
@@ -430,7 +430,7 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     }
 
     /// The modifier keys changed: Quick Pick's alone shows the numbers, anything else hides them. Pressed fresh (every
-    /// modifier was up at some moment since the panel opened) they show at once, as the source line in the footer must
+    /// modifier was up at some moment since the panel opened) they show at once
     /// (his recording 2026-11-19: about a second late felt broken). Still held from the hot key (⌥⌘C, ⌥ let go first)
     /// they wait 0.2 s, so letting go of the hot key does not flash them.
     func flagsChanged(_ f: NSEvent.ModifierFlags) {
@@ -462,14 +462,6 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
             let (on, n) = rowLook(i)
             c.update(selected: on, badge: n, focused: focused)
         }
-    }
-
-    /// The footer while the numbers show: the app the picked row (or the first in sight) was copied in, and when.
-    func sourceLine() -> String? {
-        guard let id = sel.cursor ?? sel.order.last ?? visibleEntryIDs().first, let e = entry(id) else { return nil }
-        let when = dayText(Calendar.current.startOfDay(for: e.copied)) + ", " + timeText(e.copied)
-        let app = appName(e.app)
-        return app.isEmpty ? when : app + "  ·  " + when
     }
 
     /// Copied back from here: the entries move to the top (Store.touch). The panel shows the new order the next time
@@ -988,7 +980,7 @@ final class PanelView: NSView {
     let token = KindToken()
     let table = ListTable()
     let scroll = NSScrollView()
-    private let facts = NSTextField(labelWithString: "")
+    private(set) var facts = NSTextField(labelWithString: "")
     private let icon = NSImageView()
     private let content = Flipped()
     private let footer = Flipped()

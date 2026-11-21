@@ -1,6 +1,6 @@
 #!/bin/zsh
 # Off-screen tests (tests/main.swift says what each does). ./test runs unit, capture (a private pasteboard), copy
-# (a private pasteboard) and the renders (light, dark, purple accent, the leaving motion) into $TMPDIR/copia-render.
+# (a private pasteboard), and with COPIA_RENDER=1 the renders (light, dark, purple accent, the leaving motion) into $TMPDIR/copia-render.
 # ./test general writes to the general pasteboard, his content saved before and put back after: run it outside
 # Claude's command sandbox. The binary stays at $TMPDIR/copia-tests.
 # ./test cs runs the same (renders too), plus the real-window checks (the Quick Look crash of 0.4, focus, keys, places:
@@ -28,6 +28,9 @@ $t capture
 $t copy
 # Links with the network denied: a title or picture that needed a fetch would come back empty and fail.
 sandbox-exec -p '(version 1)(allow default)(deny network*)' $t links
+# The renders put a window under the desktop picture, which shows through his solid black wallpaper as a strange
+# desktop (his recording 2026-11-21 08:52): only on a screen of its own, or with COPIA_RENDER=1 when he is away.
+if [ "$COPIA_RENDER" != 1 ]; then echo "renders skipped (COPIA_RENDER=1 to run them: they show on the screen)"; echo Done; exit; fi
 [ -d Copia.app ] || ./build >/dev/null
 out=$TMPDIR/copia-render; rm -rf "$out"; mkdir -p "$out"
 $t render $PWD/Copia.app light $out/light.png
