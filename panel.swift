@@ -85,6 +85,8 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     /// Quick Pick's numbers are on the rows (its modifier held), and the footer names the row's app and time.
     private(set) var showsDigits = false
     private var digitTimer: Timer?
+    /// Every modifier has been up since the panel opened: a press of Quick Pick's modifier now is the person's own.
+    private(set) var pickArmed = false
     /// Off-screen renders draw the selection as in a focused window.
     var forceFocus = false
     /// Slows every animation by this factor, to step its frames in a test (COPIA_SLOW).
@@ -427,12 +429,17 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         return out
     }
 
-    /// The modifier keys changed: Quick Pick's alone, held for a moment (not the ⌥⌘ of the hot key being let go), shows
-    /// the numbers; anything else hides them.
+    /// The modifier keys changed: Quick Pick's alone shows the numbers, anything else hides them. Pressed fresh (every
+    /// modifier was up at some moment since the panel opened) they show at once, as the source line in the footer must
+    /// (his recording 2026-11-19: about a second late felt broken). Still held from the hot key (⌥⌘C, ⌥ let go first)
+    /// they wait 0.2 s, so letting go of the hot key does not flash them.
     func flagsChanged(_ f: NSEvent.ModifierFlags) {
         digitTimer?.invalidate(); digitTimer = nil
-        guard f.intersection([.command, .option, .control, .shift]) == keys.pick.flags else { setDigits(false); return }
+        let m = f.intersection([.command, .option, .control, .shift])
+        if m.isEmpty { pickArmed = true }
+        guard m == keys.pick.flags else { setDigits(false); return }
         guard !showsDigits else { return }
+        if pickArmed { setDigits(true); return }
         let t = Timer(timeInterval: 0.2, repeats: false) { [weak self] _ in self?.setDigits(true) }
         RunLoop.main.add(t, forMode: .common)
         digitTimer = t
@@ -713,6 +720,7 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         kindToken = nil; view.setToken(nil); suggestions = []
         keys = store.keys
         setDigits(false)
+        pickArmed = NSEvent.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty
         // Where Return pastes: the app in front now. The panel never activates Copia, so it stays the front app.
         let front = NSWorkspace.shared.frontmostApplication
         pasteTarget = front?.processIdentifier == getpid() ? nil : front

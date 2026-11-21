@@ -807,10 +807,15 @@ func keysTests() {
     pc.menuCopyPlain()
     check(copies.count == 2 && copies[1].1, "Copy as Plain Text joins the queue as plain text")
     // The digits: the modifier alone held for a moment shows them; with the footer naming app and time.
+    pc.flagsChanged([.command, .option])
     pc.flagsChanged(.command)
-    check(!pc.showsDigits, "not at once (the hot key's ⌘ being let go)")
+    check(!pc.showsDigits, "still held from the hot key: not at once (⌥ of ⌥⌘C let go first)")
     _ = wait(0.4) { pc.showsDigits }
     check(pc.showsDigits && pc.sourceLine() != nil, "⌘ held: the numbers, and the footer's app and time (\(pc.sourceLine() ?? "-"))")
+    pc.flagsChanged([])
+    check(!pc.showsDigits, "all let go: gone")
+    pc.flagsChanged(.command)
+    check(pc.showsDigits && pc.sourceLine() != nil, "⌘ pressed fresh: the numbers and the source line in the same event")
     pc.flagsChanged([.command, .shift])
     check(!pc.showsDigits, "another modifier added: gone")
     // «/»: the kinds as suggestions, Return picks one as a token, ⌫ on the empty field takes it away.
