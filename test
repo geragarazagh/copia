@@ -3,25 +3,32 @@
 # (a private pasteboard), and with COPIA_RENDER=1 the renders (light, dark, purple accent, the leaving motion) into $TMPDIR/copia-render.
 # ./test general writes to the general pasteboard, his content saved before and put back after: run it outside
 # Claude's command sandbox. The binary stays at $TMPDIR/copia-tests.
-# ./test cs runs the same (renders too), plus the real-window checks (the Quick Look crash of 0.4, focus, keys, places:
-# copia-tests screen; Return pasting into TextEdit for real: copia-tests pastelive), inside the agents' own login session (skill mac, control.md «cs»), where the
-# test windows never reach his screen: binary, fixtures and pictures go to /Users/Shared/claude/clip first.
+# ./test vm runs the same (renders too) in the test machine pxl-27, plus the real-window checks (the Quick Look crash of 0.4, focus, keys, places:
+# copia-tests screen; Return pasting into TextEdit for real: copia-tests pastelive), where the test windows never reach his screen; the
+# renders come back into $TMPDIR/copia-render.
 set -e
 cd "${0:A:h}"
 t=$TMPDIR/copia-tests
 swiftc -O -target arm64-apple-macos13.0 -D TRIALS -o $t tests/main.swift app.swift capture.swift model.swift store.swift copy.swift \
   selection.swift panel.swift rows.swift text.swift motion.swift place.swift preview.swift menu.swift browser.swift views.swift settings.swift link.swift drag.swift queue.swift shelf.swift deck.swift keys.swift paste.swift
 if [ "$1" = general ]; then $t general; exit; fi
-if [ "$1" = cs ]; then
-  T=/Users/Shared/claude/clip; mkdir -p $T; chmod 777 $T
+if [ "$1" = vm ]; then
+  # The real-window checks, paste into TextEdit and the renders, inside the test machine pxl-27 (macOS 27, his
+  # 1728 x 1117 frame; started headless, no clipboard, no sound), so nothing reaches his screen. Replaced `./test cs`
+  # 2026-11-21: the agents' session cs was deleted 2026-11-16. Lock ~/.local/share/tart/lock-pxl-27 while it runs.
+  V=~/.local/share/holdq/test/vm; L=~/.local/share/tart/lock-pxl-27
+  mkdir $L 2>/dev/null || { echo "pxl-27 is locked: $(cat $L/owner 2>/dev/null)"; exit 1; }; echo "copia ./test vm $(date)" > $L/owner
+  trap '$V pxl-27 stop >/dev/null; rm -rf "${L:?}"' EXIT
   [ -d Copia.app ] || ./build >/dev/null
-  rm -rf $T/tests $T/res $T/Copia.app; cp -R tests Copia.app $T/; cp -R ../mock/res $T/res; cp $t $T/copia-tests; chmod -R a+rX $T/tests $T/Copia.app $T/res $T/copia-tests
-  cs run /bin/zsh -c "cd $T && export COPIA_RES=$T/res/ && ./copia-tests unit && ./copia-tests capture && ./copia-tests copy && ./copia-tests screen &&
-    : > $T/paste.txt && open -a TextEdit $T/paste.txt && sleep 3 && ./copia-tests pastelive; r=\$?; pkill -x TextEdit; [ \$r = 0 ] &&
-    sandbox-exec -p '(version 1)(allow default)(deny network*)' ./copia-tests links && rm -rf r && mkdir r &&
-    ./copia-tests render $T/Copia.app light r/light.png && ./copia-tests render $T/Copia.app dark r/dark.png motion &&
-    ./copia-tests render $T/Copia.app dark r/preview.png preview && ./copia-tests render $T/Copia.app light r/keys.png keys && chmod -R a+rX r"
-  echo "renders: $T/r"; echo Done; exit
+  $V pxl-27 boot
+  d=$(mktemp -d); cp -R tests Copia.app $d/; cp -R ../mock/res $d/res; cp $t $d/copia-tests
+  tar -C $d -cf - . | T=180 $V pxl-27 sh 'rm -rf clip && mkdir clip && tar -C clip -xf -'; rm -rf "${d:?}"
+  T=900 $V pxl-27 sh 'cd clip && export COPIA_RES=$HOME/clip/res/ && ./copia-tests unit && ./copia-tests capture && ./copia-tests copy &&
+    ./copia-tests screen && : > paste.txt && open -a TextEdit paste.txt && sleep 3 && ./copia-tests pastelive; r=$?; pkill -x TextEdit; [ $r = 0 ] &&
+    rm -rf r && mkdir r && ./copia-tests render $HOME/clip/Copia.app light r/light.png && ./copia-tests render $HOME/clip/Copia.app dark r/dark.png motion &&
+    ./copia-tests render $HOME/clip/Copia.app dark r/preview.png preview && ./copia-tests render $HOME/clip/Copia.app light r/keys.png keys' 2>&1 | grep -v sandbox_extension
+  out=$TMPDIR/copia-render; rm -rf "${out:?}"; mkdir -p $out
+  T=300 $V pxl-27 sh 'tar -C clip/r -cf - .' | tar -C $out -xf -; echo "renders: $out"; echo Done; exit
 fi
 $t unit
 $t capture
