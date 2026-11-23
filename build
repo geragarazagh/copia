@@ -1,6 +1,7 @@
 #!/bin/zsh
 # Builds <Name>.app in this folder with plain swiftc, no Xcode project (dev/apps.md, «Common to every app»).
-# Needs Xcode 26 or later in /Applications for the icon (actool, Icon Composer).
+# Works with Xcode Command Line Tools alone for ad-hoc local builds; full Xcode in /Applications is used for
+# the icon (Xcode 26 or later: actool, Icon Composer; required for Developer ID signed releases).
 # The app's name is set here only; the code reads it from the bundle. Updates through Sparkle, as in the other apps.
 # SIGN_ID="Developer ID Application: …" ./build signs with that certificate (as the other apps' release does); ad hoc
 # otherwise.
@@ -9,6 +10,11 @@ cd "${0:A:h}"
 # The version changes per release, not per build (dev/apps.md, «Version numbers»).
 name=Copia version=0.2 min=13.0
 id=com.geragaraza.${(L)name} app=$name.app
+xc=${XCODE_CONTENTS:-/Applications/Xcode.app/Contents}
+has_xcode=0; [ -d "$xc/Developer" ] && [ -x "$xc/Applications/Icon Composer.app/Contents/Executables/ictool" ] && has_xcode=1
+if [ -n "${SIGN_ID:-}" ] && [ "$SIGN_ID" != - ] && [ $has_xcode -eq 0 ]; then
+  echo "Developer ID builds require full Xcode at $xc (for Assets.car)"; exit 1
+fi
 tmp=$(mktemp -d); trap 'rm -rf $tmp' EXIT
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
@@ -35,7 +41,7 @@ done
 # Trial switches (--trial, its mouse FIFO, COPIA_TRIAL_*) only in a build signed ad hoc, never in a release (app.swift).
 [ "${SIGN_ID:--}" = - ] && trials=(-D TRIALS) || trials=()
 swiftc -O -target arm64-apple-macos$min $trials -F vendor -framework Sparkle -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
-  -o "$app/Contents/MacOS/$name" main.swift updates.swift app.swift capture.swift model.swift store.swift copy.swift selection.swift panel.swift rows.swift text.swift motion.swift place.swift preview.swift menu.swift browser.swift views.swift settings.swift link.swift drag.swift queue.swift shelf.swift deck.swift keys.swift paste.swift
+  -o "$app/Contents/MacOS/$name" main.swift cli.swift updates.swift app.swift capture.swift model.swift store.swift copy.swift selection.swift panel.swift rows.swift text.swift motion.swift place.swift preview.swift menu.swift browser.swift views.swift settings.swift link.swift drag.swift queue.swift shelf.swift deck.swift keys.swift paste.swift
 
 # App icon, Apple's way (apps.md, «Icons»): the picture from icon.swift, the plate is the system's own fill, compiled
 # by Xcode's actool into Assets.car (macOS 26+ switch it with the theme) and AppIcon.icns (Apple's light rendition, 13-15).
@@ -45,11 +51,12 @@ swiftc -O -target arm64-apple-macos$min $trials -F vendor -framework Sparkle -Xl
 # icon.swift is the one file to swap for a new icon: the app, docs/icon.png and docs/icon-dark.png (the README's, Icon
 # Composer's own renders, 206 px on a 256 canvas as Apple's 824 of 1024) all come from it here. Its layer is SVG, not
 # the family's PNG pair: actool keeps it as a vector, every size drawn from the path.
-xc=/Applications/Xcode.app/Contents
-swiftc -O -o $tmp/icon icon.swift
-mkdir -p $tmp/AppIcon.icon/Assets
-$tmp/icon $tmp/AppIcon.icon/Assets
-cat > $tmp/AppIcon.icon/icon.json <<'JSON'
+# On Macs with Command Line Tools only (no Xcode.app), build AppIcon.icns from docs/icon.png via sips + iconutil.
+if [ $has_xcode -eq 1 ]; then
+  swiftc -O -o $tmp/icon icon.swift
+  mkdir -p $tmp/AppIcon.icon/Assets
+  $tmp/icon $tmp/AppIcon.icon/Assets
+  cat > $tmp/AppIcon.icon/icon.json <<'JSON'
 {
   "fill" : "system-light",
   "fill-specializations" : [ { "appearance" : "dark", "value" : "system-dark" } ],
@@ -59,14 +66,23 @@ cat > $tmp/AppIcon.icon/icon.json <<'JSON'
   "supported-platforms" : { "squares" : [ "macOS" ] }
 }
 JSON
-DEVELOPER_DIR=$xc/Developer xcrun actool $tmp/AppIcon.icon --compile "$PWD/$app/Contents/Resources" --platform macosx \
-  --minimum-deployment-target $min --app-icon AppIcon --output-partial-info-plist $tmp/icon.plist --target-device mac >/dev/null
-mkdir -p docs
-for r in Default Dark; do
-  "$xc/Applications/Icon Composer.app/Contents/Executables/ictool" $tmp/AppIcon.icon --export-image --output-file $tmp/$r.png \
-    --platform macOS --rendition $r --width 206 --height 206 --scale 1 >/dev/null
-  sips -p 256 256 $tmp/$r.png --out docs/icon${${r:#Default}:+-dark}.png >/dev/null
-done
+  DEVELOPER_DIR=$xc/Developer xcrun actool $tmp/AppIcon.icon --compile "$PWD/$app/Contents/Resources" --platform macosx \
+    --minimum-deployment-target $min --app-icon AppIcon --output-partial-info-plist $tmp/icon.plist --target-device mac >/dev/null
+  mkdir -p docs
+  for r in Default Dark; do
+    "$xc/Applications/Icon Composer.app/Contents/Executables/ictool" $tmp/AppIcon.icon --export-image --output-file $tmp/$r.png \
+      --platform macOS --rendition $r --width 206 --height 206 --scale 1 >/dev/null
+    sips -p 256 256 $tmp/$r.png --out docs/icon${${r:#Default}:+-dark}.png >/dev/null
+  done
+elif [ -f docs/icon.png ]; then
+  echo "Note: Xcode not found at $xc; using iconutil fallback for AppIcon.icns."
+  mkdir -p $tmp/AppIcon.iconset
+  for sz in 16 32 128 256 512; do
+    sips -z $sz $sz docs/icon.png --out $tmp/AppIcon.iconset/icon_${sz}x${sz}.png >/dev/null
+    sips -z $((sz*2)) $((sz*2)) docs/icon.png --out $tmp/AppIcon.iconset/icon_${sz}x${sz}@2x.png >/dev/null
+  done
+  iconutil -c icns $tmp/AppIcon.iconset -o "$app/Contents/Resources/AppIcon.icns"
+fi
 
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -99,6 +115,7 @@ PLIST
 # en.lproj alone makes the system's own parts (the app menu, Services, the share sheet) English too.
 mkdir "$app/Contents/Resources/en.lproj"
 cp LICENSE THIRD-PARTY-LICENSES.md "$app/Contents/Resources/"   # Sparkle's MIT license travels with it
+[ -f skills/copia/SKILL.md ] && cp skills/copia/SKILL.md "$app/Contents/Resources/SKILL.md"
 
 # Open at Login (dev/apps.md, «Open at Login»): an agent in the bundle passes --login; that copy only starts the app
 # with `open -g … --background` and exits, so a login start shows no window and unregistering never kills the app.

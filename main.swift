@@ -46,6 +46,8 @@ if let v = arg("--open-at-login") {   // on, off, or anything else to print the 
     exit(v == "on" && loginItem.status != .enabled || v == "off" && loginItem.status == .enabled ? 1 : 0)
 }
 
+_ = MainActor.assumeIsolated { runCopiaCLI(args) }
+
 // One copy at a time: two would record every copy twice.
 if let me = Bundle.main.bundleIdentifier,
    NSRunningApplication.runningApplications(withBundleIdentifier: me).contains(where: { $0 != .current }) {
