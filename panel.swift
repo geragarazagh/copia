@@ -186,8 +186,10 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         // slide up, or fade back in), the rows' only animation; every other change (a search, a copy arriving) lands
         // in one frame, as Spotlight's. 0.4 removed rows in one frame, so three deleted items vanished silently.
         // Overlapping removeRows animations in AppKit leave an empty gap and stall layout (recording 2026-11-22 10:50),
-        // so a rapid second delete while one is in flight falls back to reloadData().
-        if animateNext, !animatingRows, isVisible || testVisible, let change = listChange(before, rowKeys) {
+        // and animating to or from an empty list (where fitHeight already animates the box itself between fieldH and
+        // panelSize.height) leaves NSTableView's frame one viewport too tall after ⌘A → ⌘⌫ → ⌘Z (recording 2026-11-23 10:03),
+        // so both fall back to reloadData() + tile().
+        if animateNext, !animatingRows, isVisible || testVisible, !before.isEmpty, !rowKeys.isEmpty, let change = listChange(before, rowKeys) {
             animateNext = false
             animatingRows = true
             NSAnimationContext.runAnimationGroup({ ctx in
@@ -202,11 +204,13 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
                 guard let self else { return }
                 self.animatingRows = false
                 if self.view.table.numberOfRows != self.rows.count { self.view.table.reloadData() }
+                self.view.table.tile()
             })
         } else {
             animateNext = false
             animatingRows = false
             view.table.reloadData()
+            view.table.tile()
         }
         updateFacts()
         fitHeight(animated: isVisible || testVisible)
@@ -290,7 +294,8 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     func setBox(height h: CGFloat, top t: CGFloat) {
         height = h; top = t
         view.setFrameSize(NSSize(width: panelSize.width, height: h))
-        guard let w = window, let s = screen else { return }
+        view.table.tile()
+        guard let w = window, screen != nil else { return }
         let x = left
         w.setFrame(NSRect(x: x - panelMargin, y: t - h - panelMargin, width: panelSize.width + 2 * panelMargin,
                           height: h + 2 * panelMargin), display: true)
@@ -1080,6 +1085,7 @@ final class PanelView: NSView {
         table.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
         table.gridStyleMask = []
         scroll.documentView = table
+        table.autoresizingMask = [.width]
         content.addSubview(scroll)
 
         facts.alignment = .center

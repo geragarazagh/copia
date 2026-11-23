@@ -270,6 +270,14 @@ func unit() {
     check(zip(hs60, hs60.dropFirst()).allSatisfy { $0 >= $1 } && settled >= 10 && settled <= 13 && hc.top == 900,
           "shrinking: monotonic, settled on frame \(settled) (12 = 200 ms), top fixed: \(hs60.map { Int($0) })")
     Ticker.manual = false
+    hc.view.field.stringValue = ""; hc.filter()
+    hc.setBox(height: panelSize.height, top: 900)
+    hc.selectAll(); hc.deleteSelection()
+    hc.setBox(height: fieldH, top: 900)
+    _ = hc.undoDelete()
+    hc.setBox(height: panelSize.height, top: 900)
+    let lastRowMaxY = hc.view.table.rect(ofRow: hc.view.table.numberOfRows - 1).maxY
+    check(hc.view.table.frame.height == lastRowMaxY, "⌘A → ⌘⌫ → ⌘Z keeps table height exact (\(hc.view.table.frame.height) == \(lastRowMaxY))")
     try? FileManager.default.removeItem(at: hdir)
 
     // The fifteen places (place.swift, PlaceGrid; his pick 2026-11-16): on Grids' lines on every kind of screen.
