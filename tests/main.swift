@@ -170,8 +170,9 @@ func unit() {
     let (fs, fids) = seeded(fdir, [(textSnap("Привет, мир"), now), (textSnap("hello world again"), now), (imageSnap(testImage("2", (1, 0, 0), w: 3456, h: 2234)), now)])
     let f = Facts(fids.compactMap { id in fs.entries().first { $0.id == id } })
     check(f.head == "3\u{00A0}objects", "facts head \(f.head)")
-    check(f.parts.count == 4 && f.parts[0] == "28\u{00A0}characters" && f.parts[1] == "5\u{00A0}words", "facts parts \(f.parts)")
-    check(f.parts[2].hasPrefix("≈"), "tokens \(f.parts)")
+    check(f.parts.count == 4 && f.parts[1] == "28\u{00A0}characters" && f.parts[2] == "5\u{00A0}words", "facts parts \(f.parts)")
+    check(f.parts[3].hasPrefix("≈"), "tokens last \(f.parts)")
+    check(roundTokensUp(2416) == 2450 && roundTokensUp(19941) == 20000 && roundTokensUp(7.2) == 8 && roundTokensUp(82) == 85 && roundTokensUp(415) == 420, "roundTokensUp")
 
     // Delete and undo through the panel's controller (no window).
     let ddir = tmpDir("delete")
@@ -493,7 +494,7 @@ func unit() {
     let tv = pv.preview.textForTest!
     tv.setSelectedRange(NSRange(location: tv.string.count, length: 0))
     tv.insertText(" and more", replacementRange: tv.selectedRange())
-    check(pv.preview.factsText.hasPrefix(counted(19, "character|characters")) && pv.preview.factsText.contains(counted(1, "line|lines")),
+    check(pv.preview.factsText.hasPrefix("19\u{00A0}bytes") && pv.preview.factsText.contains(counted(19, "character|characters")) && pv.preview.factsText.contains(counted(1, "line|lines")),
           "facts count live: \(pv.preview.factsText)")
     tv.setSelectedRange(NSRange(location: 0, length: 5))
     pv.preview.toggle(.boldFontMask)

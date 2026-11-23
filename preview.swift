@@ -366,21 +366,21 @@ final class PreviewController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         }
     }
 
-    /// «1 162 символа · 180 слов · 3 строки · ≈ 415 токенов · 2 КБ», live while editing; an image: its kind,
-    /// pixels, ≈tokens and size.
+    /// «2 КБ · 1 162 символа · 180 слов · 3 строки · ≈ 420 токенов», live while editing; an image: its kind,
+    /// size, pixels and ≈tokens.
     func updateFacts() {
         guard let e = entry else { return }
         var parts: [String] = []
         if let tv = textView {
             let t = tv.string
             let lines = t.isEmpty ? 0 : t.split(separator: "\n", omittingEmptySubsequences: false).count
-            parts = [counted(t.count, "character|characters"), counted(wordCount(t), "word|words"), counted(lines, "line|lines"),
-                     "≈\u{00A0}" + counted(Int(tokenEstimate(t).rounded()), "token|tokens"), sizeText(t.utf8.count)]
+            parts = [sizeText(t.utf8.count), counted(t.count, "character|characters"), counted(wordCount(t), "word|words"),
+                     counted(lines, "line|lines"), "≈\u{00A0}" + counted(roundTokensUp(tokenEstimate(t)), "token|tokens")]
         } else {
             parts = [kindLabel(e)]
             if card != nil { parts.append(e.address) }   // the card names only the site; the whole address here
-            if e.width > 0 { parts += ["\(e.width) × \(e.height)", "≈\u{00A0}" + counted(Int(imageTokens(e.width, e.height).rounded()), "token|tokens")] }
             if e.bytes > 0 { parts.append(sizeText(e.bytes)) }
+            if e.width > 0 { parts += ["\(e.width) × \(e.height)", "≈\u{00A0}" + counted(roundTokensUp(imageTokens(e.width, e.height)), "token|tokens")] }
         }
         facts.stringValue = parts.joined(separator: "  ·  ")
         revert.isHidden = !(edited || store.hasOriginal(e.id))

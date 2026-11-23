@@ -244,9 +244,17 @@ func fileSize(_ u: URL) -> Int {
     return r.fileSize ?? 0
 }
 
-// MARK: the facts line (objects · characters · words · ≈tokens · size)
+// MARK: the facts line (objects · size · characters · words · ≈tokens)
 
-/// Counted for language models: characters and words of the text, an estimate of tokens, the size.
+/// Rounded upward so an estimate never claims false precision (2 416 → 2 450, 19 941 → 20 000; his word 2026-11-22).
+func roundTokensUp(_ x: Double) -> Int {
+    guard x > 0 else { return 0 }
+    if x < 10 { return Int(ceil(x)) }
+    let step: Double = x < 100 ? 5 : x < 1000 ? 10 : x < 10000 ? 50 : 100
+    return Int(ceil(x / step) * step)
+}
+
+/// Counted from hardest fact to loosest: size, characters, words, an upward-rounded estimate of tokens.
 /// Tokens: about 4 characters of Latin text and 2.8 of Cyrillic per token (measured on Claude's tokenizer for the
 /// mockups); an image as Claude sees it: scaled to at most 1568 px on the long side and about 1.15 MP, then
 /// width × height / 750 (a full-screen screenshot of a 16-inch MacBook Pro is about 1 530).
@@ -264,9 +272,9 @@ struct Facts {
         for e in entries where e.kind == .image && e.width > 0 { tk += imageTokens(e.width, e.height) }
         let b = entries.reduce(0) { $0 + $1.bytes }
         parts = []
-        if ch > 0 { parts += [counted(ch, "character|characters"), counted(wd, "word|words")] }
-        if tk >= 1 { parts.append("≈\u{00A0}" + counted(Int(tk.rounded()), "token|tokens")) }
         if b > 0 { parts.append(sizeText(b)) }
+        if ch > 0 { parts += [counted(ch, "character|characters"), counted(wd, "word|words")] }
+        if tk >= 1 { parts.append("≈\u{00A0}" + counted(roundTokensUp(tk), "token|tokens")) }
     }
 }
 

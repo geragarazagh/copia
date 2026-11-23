@@ -185,16 +185,27 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         // A deletion or its undo, on screen: the system's own list motion (Mail's: the rows fade while the ones below
         // slide up, or fade back in), the rows' only animation; every other change (a search, a copy arriving) lands
         // in one frame, as Spotlight's. 0.4 removed rows in one frame, so three deleted items vanished silently.
-        if animateNext, isVisible || testVisible, let change = listChange(before, rowKeys) {
+        // Overlapping removeRows animations in AppKit leave an empty gap and stall layout (recording 2026-11-22 10:50),
+        // so a rapid second delete while one is in flight falls back to reloadData().
+        if animateNext, !animatingRows, isVisible || testVisible, let change = listChange(before, rowKeys) {
             animateNext = false
-            view.table.beginUpdates()
-            switch change {
-            case .removed(let ix): view.table.removeRows(at: ix, withAnimation: [.effectFade, .slideUp])
-            case .inserted(let ix): view.table.insertRows(at: ix, withAnimation: [.effectFade, .slideDown])
-            }
-            view.table.endUpdates()
+            animatingRows = true
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = 0.16
+                view.table.beginUpdates()
+                switch change {
+                case .removed(let ix): view.table.removeRows(at: ix, withAnimation: [.effectFade, .slideUp])
+                case .inserted(let ix): view.table.insertRows(at: ix, withAnimation: [.effectFade, .slideDown])
+                }
+                view.table.endUpdates()
+            }, completionHandler: { [weak self] in
+                guard let self else { return }
+                self.animatingRows = false
+                if self.view.table.numberOfRows != self.rows.count { self.view.table.reloadData() }
+            })
         } else {
             animateNext = false
+            animatingRows = false
             view.table.reloadData()
         }
         updateFacts()
@@ -206,6 +217,8 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     private var rowKeys: [String] = []
     /// The next reload comes from a deletion or its undo.
     var animateNext = false
+    /// An animated row removal/insertion is currently running in NSTableView.
+    private var animatingRows = false
 
     enum ListChange: Equatable { case removed(IndexSet), inserted(IndexSet) }
 
@@ -359,7 +372,8 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
             }
         }
         if let id, let r = rows.firstIndex(where: { if case .entry(let i) = $0 { return shown[i].id == id }; return false }) {
-            view.table.scrollRowToVisible(r)
+            let vis = view.scroll.contentView.documentVisibleRect
+            if !vis.contains(view.table.rect(ofRow: r)) { view.table.scrollRowToVisible(r) }
         }
         updateFacts()
     }
