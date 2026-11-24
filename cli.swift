@@ -72,7 +72,12 @@ private func stripDataFlag(_ rest: [String]) -> (dir: URL, args: [String]) {
     return (dir, out)
 }
 
+// Reads only an existing history: Store(dir:) makes the folders and an empty database, which a typo in --data or a Mac
+// where Copia never ran must not get from a read (2026-11-24 review).
 private func openCliStore(_ dir: URL) -> Store {
+    guard FileManager.default.fileExists(atPath: dir.appendingPathComponent("copia.sqlite").path) else {
+        cliFail("No Copia history in \(dir.path).")
+    }
     do { return try Store(dir: dir) } catch { cliFail("Cannot open \(dir.path): \(error)") }
 }
 
