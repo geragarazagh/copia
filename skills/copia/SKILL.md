@@ -11,14 +11,15 @@ Queries and re-copies items from Copia's offline clipboard history (`~/.local/sh
 
 ## Locate the CLI
 
-Check in order; use the first that exits 0:
+Check in order; use the first that exits 0. Use `--help`, never `--version`, and read the app's version from its Info.plist before running its binary: Copia before 0.3 has no command line at all, so it takes every flag (`--help` and `--version` alike) as a plain start and opens its window instead of failing.
 
 ```sh
-copia-cli --version
-/Applications/Copia.app/Contents/MacOS/Copia --version
+copia-cli --help
+defaults read /Applications/Copia.app/Contents/Info CFBundleShortVersionString
+/Applications/Copia.app/Contents/MacOS/Copia --help
 ```
 
-If neither exists, tell the user how to install it (`brew install geragarazagh/tap/copia`) and stop.
+`copia-cli` exists only in versions that have the command line, so it is safe to try first. Run the third line only if the second prints 0.3 or newer; if it prints an older version, tell the user once to update Copia (Check for Updates in its menu, or `brew upgrade --cask geragarazagh/tap/copia`) and stop. If none works, tell the user how to install it (`brew install geragarazagh/tap/copia`) and stop.
 
 ## Common tasks
 
