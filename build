@@ -56,12 +56,16 @@ if [ $has_xcode -eq 1 ]; then
   swiftc -O -o $tmp/icon icon.swift
   mkdir -p $tmp/AppIcon.icon/Assets
   $tmp/icon $tmp/AppIcon.icon/Assets
+  # Clear and Tinted take the dark picture (the "tinted" entry): without it they fall back to the light one, and a dark
+  # drawing nearly vanishes on the glass; with it the mark is white on glass and tinted in Tinted Dark, as Apple's own
+  # icons are (ictool renders of all six styles, 2026-11-25).
   cat > $tmp/AppIcon.icon/icon.json <<'JSON'
 {
   "fill" : "system-light",
   "fill-specializations" : [ { "appearance" : "dark", "value" : "system-dark" } ],
   "groups" : [ { "layers" : [ { "name" : "picture", "glass" : false,
-    "image-name-specializations" : [ { "value" : "light.svg" }, { "appearance" : "dark", "value" : "dark.svg" } ] } ],
+    "image-name-specializations" : [ { "value" : "light.svg" }, { "appearance" : "dark", "value" : "dark.svg" },
+      { "appearance" : "tinted", "value" : "dark.svg" } ] } ],
     "shadow" : { "kind" : "none", "opacity" : 0.5 }, "translucency" : { "enabled" : false, "value" : 0.5 } } ],
   "supported-platforms" : { "squares" : [ "macOS" ] }
 }
