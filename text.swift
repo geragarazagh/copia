@@ -38,12 +38,32 @@ func counted(_ n: Int, _ forms: String) -> String {
 }
 
 /// 3 381 in ru and uk (a non-breaking space between groups), 3,381 in en: the interface language's own way.
-func grouped(_ n: Int) -> String {
-    let f = NumberFormatter()
-    f.numberStyle = .decimal
-    f.locale = uiLocale
-    return f.string(from: NSNumber(value: n)) ?? String(n)
+func grouped(_ n: Int) -> String { groupFormat.string(from: NSNumber(value: n)) ?? String(n) }
+
+// The formatters are made once: a new NumberFormatter or DateFormatter per call (every row's time, every count) loads
+// ICU's locale data each time, and rows drawn during a clipboard storm spent 0.3-0.7 s of main thread on it (stress
+// runs 2026-11-27). Formatting with a formatter that is not changed afterwards is thread-safe.
+private nonisolated(unsafe) let groupFormat: NumberFormatter = {
+    let f = NumberFormatter(); f.numberStyle = .decimal; f.locale = uiLocale; return f
+}()
+private nonisolated(unsafe) let sizeFormats: [NumberFormatter] = (0...1).map { u in
+    let f = NumberFormatter(); f.locale = uiLocale; f.minimumFractionDigits = 0; f.maximumFractionDigits = u; return f
 }
+private nonisolated(unsafe) let timeFormat: DateFormatter = {
+    let f = DateFormatter()
+    f.locale = .autoupdatingCurrent   // keeps the person's own 12/24-hour choice
+    f.dateStyle = .none
+    f.timeStyle = .short
+    return f
+}()
+private nonisolated(unsafe) let dayFormats: (near: DateFormatter, thisYear: DateFormatter, before: DateFormatter) = {
+    let near = DateFormatter(), thisYear = DateFormatter(), before = DateFormatter()
+    for f in [near, thisYear, before] { f.locale = uiLocale }
+    near.doesRelativeDateFormatting = true; near.dateStyle = .medium; near.timeStyle = .none
+    thisYear.setLocalizedDateFormatFromTemplate("EEEEdMMMM")
+    before.setLocalizedDateFormatFromTemplate("dMMMMy")
+    return (near, thisYear, before)
+}()
 
 /// 6,2 МБ / 6.2 MB: decimal units as Finder counts them, in the interface language (Foundation's
 /// ByteCountFormatter follows the system locale, so a Russian interface on an English system would read «MB»).
@@ -52,33 +72,17 @@ func sizeText(_ bytes: Int) -> String {
     var v = Double(bytes) / 1000, u = 0
     let units = ["KB", "MB", "GB", "TB"]
     while v >= 999.95 && u < units.count - 1 { v /= 1000; u += 1 }
-    let f = NumberFormatter()
-    f.locale = uiLocale
-    f.minimumFractionDigits = 0
-    f.maximumFractionDigits = u == 0 ? 0 : 1
+    let f = sizeFormats[u == 0 ? 0 : 1]
     return (f.string(from: NSNumber(value: v)) ?? String(v)) + "\u{00A0}" + L(units[u])
 }
 
-func timeText(_ d: Date) -> String {
-    let f = DateFormatter()
-    f.locale = .autoupdatingCurrent   // keeps the person's own 12/24-hour choice
-    f.dateStyle = .none
-    f.timeStyle = .short
-    return f.string(from: d)
-}
+func timeText(_ d: Date) -> String { timeFormat.string(from: d) }
 
 /// «Сегодня», «Вчера», then the date (with the weekday this year, with the year before): the system's own wording.
 func dayText(_ d: Date) -> String {
-    let f = DateFormatter()
-    f.locale = uiLocale
     let cal = Calendar.current
-    if cal.isDateInToday(d) || cal.isDateInYesterday(d) {
-        f.doesRelativeDateFormatting = true
-        f.dateStyle = .medium
-        f.timeStyle = .none
-    } else {
-        f.setLocalizedDateFormatFromTemplate(cal.isDate(d, equalTo: Date(), toGranularity: .year) ? "EEEEdMMMM" : "dMMMMy")
-    }
+    let f = cal.isDateInToday(d) || cal.isDateInYesterday(d) ? dayFormats.near
+        : cal.isDate(d, equalTo: Date(), toGranularity: .year) ? dayFormats.thisYear : dayFormats.before
     let s = f.string(from: d)
     return s.prefix(1).uppercased() + s.dropFirst()
 }

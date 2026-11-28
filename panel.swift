@@ -124,6 +124,7 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     /// Reads the history again (after a capture, a delete, an undo) and redraws in one frame.
     func reload() {
         all = store.entries()
+        if foldCache.count > all.count { let ids = Set(all.map(\.id)); foldCache = foldCache.filter { ids.contains($0.key) } }
         warmSearch()
         let gone = Set(sel.order).subtracting(all.map(\.id))
         if !gone.isEmpty { sel.remove(gone) }
@@ -330,24 +331,32 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     var settleTicker: Ticker { snap.ticker }
 
     func entry(_ id: Int64) -> Entry? { all.first { $0.id == id } }
+    /// The entries of `ids` in that order, found by one pass (entry(_:) per id is quadratic under ⌘A).
+    func entries(_ ids: [Int64]) -> [Entry] {
+        let byId = Dictionary(all.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        return ids.compactMap { byId[$0] }
+    }
 
-    private var foldCache: [Int64: ContiguousArray<UInt8>] = [:]
+    /// Folded text by entry, with the digest it was folded from: a copy that replaces an entry's content (Store.add)
+    /// or an edit keeps the id, and the old fold would go on matching the old text. Entries gone are let go at reload
+    /// (the cache only grew before: memory growth in the stress runs of 2026-11-27).
+    private var foldCache: [Int64: (digest: String, f: ContiguousArray<UInt8>)] = [:]
     private func folded(_ e: Entry) -> ContiguousArray<UInt8> {
-        if let f = foldCache[e.id] { return f }
+        if let c = foldCache[e.id], c.digest == e.digest { return c.f }
         let f = fold(e.searchable(e.title))
-        foldCache[e.id] = f
+        foldCache[e.id] = (e.digest, f)
         return f
     }
 
     /// Folds every entry not folded yet, off the main thread, so the first key typed after launch is as fast as the rest.
     func warmSearch(wait: Bool = false) {
-        let todo = all.filter { foldCache[$0.id] == nil }.map { ($0.id, $0.searchable($0.title)) }
+        let todo = all.filter { foldCache[$0.id]?.digest != $0.digest }.map { ($0.id, $0.digest, $0.searchable($0.title)) }
         guard !todo.isEmpty else { return }
         let g = DispatchGroup()
         g.enter()
         DispatchQueue.global(qos: .utility).async {
-            let done = todo.map { ($0.0, fold($0.1)) }
-            DispatchQueue.main.async { for (id, f) in done where self.foldCache[id] == nil { self.foldCache[id] = f }; g.leave() }
+            let done = todo.map { ($0.0, $0.1, fold($0.2)) }
+            DispatchQueue.main.async { for (id, d, f) in done where self.foldCache[id]?.digest != d { self.foldCache[id] = (d, f) }; g.leave() }
         }
         if wait { while g.wait(timeout: .now()) == .timedOut { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) } }
     }
@@ -360,7 +369,10 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         } else if let m = monitor, m.denied {
             view.setFacts(nil, note: L("Reading the clipboard is off: Privacy & Security > Paste from Other Apps"))
         } else if !sel.isEmpty {
-            view.setFacts(Facts(sel.order.compactMap(entry)), note: nil)
+            let picked = entries(sel.order)
+            let f = Facts(picked)
+            view.setFacts(f, note: nil)
+            if !f.complete { TextStats.shared.prepare(picked) { [weak self] in self?.updateFacts() } }
         } else {
             view.setFacts(nil, note: shown.isEmpty ? "" : counted(shown.count, "object|objects"))
         }
@@ -651,6 +663,10 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
     /// - the list (no caret): ⌘A picks every row, ⌘Z brings deleted ones back, ⌘V starts a search with the pasted text,
     ///   ⌘R shows files in Finder, ⌥⇧⌘C copies plain text; Copy, Delete and the rest are the settable keys (bindingKey).
     /// ⌘F goes to the field from anywhere; ↓, ↑ or Tab from the field give the keys to the list.
+    /// A query holds at most this many characters: a pasted 118 000 were laid out in the one-line field for 110 s
+    /// (stress run 2026-11-27), and nobody searches by more than a paragraph.
+    let queryLimit = 1_000
+
     func keyEquivalent(_ e: NSEvent) -> Bool {
         let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.capsLock, .numericPad, .function])
         guard mods.contains(.command) else { return false }
@@ -671,7 +687,7 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
             case ("a", [.command]): ed.selectAll(nil)
             case ("c", [.command]): ed.copy(nil)
             case ("x", [.command]): ed.cut(nil)
-            case ("v", [.command]): ed.paste(nil)
+            case ("v", [.command]): pasteText(into: ed, limit: queryLimit)
             case ("z", [.command]): ed.undoManager?.undo()
             case ("z", [.command, .shift]): ed.undoManager?.redo()
             case (_, [.command]) where e.keyCode == 51: ed.deleteToBeginningOfLine(nil)   // ⌘⌫, as in every text field
@@ -682,7 +698,7 @@ final class PanelController: NSObject, NSTableViewDataSource, NSTableViewDelegat
         switch (key, mods) {
         case ("a", [.command]): selectAll()
         case ("z", [.command]): if appUndo.canUndo { appUndo.undo() }
-        case ("v", [.command]): focusSearch(); (window?.fieldEditor(false, for: view.field) as? NSTextView)?.paste(nil)
+        case ("v", [.command]): focusSearch(); if let ed = window?.fieldEditor(false, for: view.field) as? NSTextView { pasteText(into: ed, limit: queryLimit) }
         case ("r", [.command]): menuShowInFinder()   // Spotlight's and Finder's Show in Finder
         case ("c", [.command, .option, .shift]): menuCopyPlain()   // the big window's Edit menu has the same
         default: return false   // ⌘C, ⌘⌫ and the rest are the settable keys (bindingKey)
@@ -1280,4 +1296,19 @@ final class HeadCell: NSTableCellView {
         addSubview(label)
     }
     required init?(coder: NSCoder) { fatalError() }
+}
+
+/// ⌘V into a text view of Copia's own (the panel's search field, the preview's editor): the pasteboard's plain string
+/// put in as typed text. AppKit's paste turns the bidi embedding and override characters of a plain string
+/// (U+202A-U+202E) into nested NSWritingDirection attributes; on macOS 26, a run nested about 12 deep makes
+/// CoreFoundation's bidi pass trap («Size of noLongerSeeControlChars has exceeded allowed control character limit») and
+/// the app dies (stress runs 2026-11-26/27, four crashes; Merum met the same trap, its window.swift). Inserted as a
+/// string, every character stays, the controls too; only those attributes are not made. A styled copy (RTF, HTML) into
+/// a rich text view keeps AppKit's paste, which reads the styles and makes no such attributes from plain controls.
+func pasteText(into tv: NSTextView, limit: Int? = nil) {
+    let pb = NSPasteboard.general
+    if tv.isRichText, limit == nil, pb.availableType(from: [.rtfd, .rtf, .html]) != nil { tv.paste(nil); return }
+    guard tv.isEditable, var s = pb.string(forType: .string) else { tv.paste(nil); return }
+    if let n = limit, s.utf8.count > n { s = String(s.prefix(n)) }
+    tv.insertText(s, replacementRange: tv.selectedRange())
 }

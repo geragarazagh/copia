@@ -199,12 +199,32 @@ func contentKey(_ items: [[Rep]], data: (Rep) -> Data?) -> String? {
 /// The first 300 characters with line breaks and runs of spaces folded: enough for two lines of a row and never
 /// a huge string in a text field (Maccy's popup slowed to a crawl on big clippings, issue #1080).
 func headline(_ t: String) -> String {
-    var out = "", space = false
+    var out = "", space = false, n = 0
     for ch in t {
         if ch.isWhitespace || ch.isNewline { space = !out.isEmpty; continue }
-        if space { out.append(" "); space = false }
+        if space { out.append(" "); space = false; n += 1 }
         out.append(ch)
-        if out.count >= 300 { break }
+        n += 1
+        if n >= 300 || out.utf8.count >= 1200 { break }
+    }
+    return shortText(out, 300)
+}
+
+/// At most `n` characters and about 4n UTF-8 bytes of `s`. One character can hold thousands of combining marks
+/// (a «Zalgo» text): a title or a thumbnail page capped by characters alone still gave CoreText hundreds of KB to
+/// shape on the main thread for every row drawn (stress runs 2026-11-27, 4-10 s beachballs).
+func shortText(_ s: String, _ n: Int) -> String {
+    let limit = 4 * n
+    guard s.utf8.count > n else { return s }   // never s.count: a text can be megabytes
+    var out = ""
+    for ch in s.prefix(n) {
+        let room = limit - out.utf8.count
+        if ch.utf8.count <= room { out.append(ch); continue }
+        // The mark-laden character itself, cut to what fits: its base and first marks.
+        var cut = ""
+        for u in ch.unicodeScalars { if cut.utf8.count + String(u).utf8.count > room { break }; cut.unicodeScalars.append(u) }
+        out += cut
+        break
     }
     return out
 }
@@ -258,23 +278,82 @@ func roundTokensUp(_ x: Double) -> Int {
 /// Tokens: about 4 characters of Latin text and 2.8 of Cyrillic per token (measured on Claude's tokenizer for the
 /// mockups); an image as Claude sees it: scaled to at most 1568 px on the long side and about 1.15 MP, then
 /// width × height / 750 (a full-screen screenshot of a 16-inch MacBook Pro is about 1 530).
+/// A large text not counted yet leaves its characters, words and tokens out (`complete` false) until TextStats has
+/// counted it off the main thread; the caller shows the line again then (TextStats.prepare).
 struct Facts {
     var head: String
     var parts: [String]
+    var complete = true
 
     init(_ entries: [Entry]) {
         let n = entries.count
         head = n == 1 ? kindLabel(entries[0]) : counted(n, "object|objects")
-        let texts = entries.filter { $0.kind != .files && $0.kind != .image }.map(\.text)
-        let ch = texts.reduce(0) { $0 + $1.count }
-        let wd = texts.reduce(0) { $0 + wordCount($1) }
-        var tk = texts.reduce(0.0) { $0 + tokenEstimate($1) }
+        var ch = 0, wd = 0, tk = 0.0
+        for e in entries where e.kind != .files && e.kind != .image {
+            guard let c = TextStats.shared.counts(e) else { complete = false; continue }
+            ch += c.chars; wd += c.words; tk += c.tokens
+        }
         for e in entries where e.kind == .image && e.width > 0 { tk += imageTokens(e.width, e.height) }
         let b = entries.reduce(0) { $0 + $1.bytes }
         parts = []
         if b > 0 { parts.append(sizeText(b)) }
+        guard complete else { return }
         if ch > 0 { parts += [counted(ch, "character|characters"), counted(wd, "word|words")] }
         if tk >= 1 { parts.append("≈\u{00A0}" + counted(roundTokensUp(tk), "token|tokens")) }
+    }
+}
+
+/// Characters, words and ≈tokens of an entry's text, counted once per content and kept for the process (the digest
+/// changes with every edit, so it is the key). Counting walks every character (grapheme breaking): ⌘A over a history
+/// holding a few texts of 100-250 KB held the main thread 28-61 s in the stress runs of 2026-11-26/27, counted again
+/// on every selection change and on every copy that reloaded the big window. A text up to `inline` bytes is counted
+/// where it is asked for (well under a frame); a larger one on a queue of its own, and the facts line waits for it.
+final class TextStats: @unchecked Sendable {
+    struct Counts { var chars: Int; var words: Int; var tokens: Double }
+    static let shared = TextStats()
+    static let inline = 32 * 1024
+    private let lock = NSLock()
+    private var known: [String: Counts] = [:]
+    private var pending: Set<String> = []
+    private let work = DispatchQueue(label: "com.geragaraza.copia.textstats", qos: .userInitiated)
+
+    static func count(_ s: String) -> Counts {
+        var ch = 0, wd = 0, inWord = false
+        for c in s {
+            ch += 1
+            let w = c.isLetter || c.isNumber
+            if w && !inWord { wd += 1 }
+            inWord = w || (inWord && (c == "-" || c == "'" || c == "’"))
+        }
+        return Counts(chars: ch, words: wd, tokens: tokenEstimate(s))
+    }
+
+    /// The counts, or nil for a large text not counted yet.
+    func counts(_ e: Entry) -> Counts? {
+        if e.digest.isEmpty { return Self.count(e.text) }
+        lock.lock(); let k = known[e.digest]; lock.unlock()
+        if let k { return k }
+        guard e.text.utf8.count <= Self.inline else { return nil }
+        let c = Self.count(e.text)
+        lock.lock(); known[e.digest] = c; lock.unlock()
+        return c
+    }
+
+    /// Counts what `entries` hold that is not counted yet, off the main thread, then runs `ready` on the main thread.
+    /// One queue, in order: a text another call is already counting is done before this call's `ready`.
+    func prepare(_ entries: [Entry], ready: @escaping () -> Void) {
+        lock.lock()
+        let todo = entries.filter { $0.kind != .files && $0.kind != .image && !$0.digest.isEmpty
+            && known[$0.digest] == nil && !pending.contains($0.digest) }.map { ($0.digest, $0.text) }
+        for (d, _) in todo { pending.insert(d) }
+        lock.unlock()
+        work.async {
+            for (d, t) in todo {
+                let c = Self.count(t)
+                self.lock.lock(); self.known[d] = c; self.pending.remove(d); self.lock.unlock()
+            }
+            DispatchQueue.main.async { ready() }
+        }
     }
 }
 

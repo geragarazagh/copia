@@ -143,7 +143,7 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
     /// The selection in the order it was picked (the paste order), as the panel's badges show it.
     private(set) var order: [Int64] = []
     var query = ""
-    private var foldCache: [Int64: ContiguousArray<UInt8>] = [:]
+    private var foldCache: [Int64: (digest: String, f: ContiguousArray<UInt8>)] = [:]   // as the panel's
     var pasteboard = NSPasteboard.general
 
     var pane: Pane { didSet { store.setSetting("browser.pane", pane.rawValue) } }
@@ -318,11 +318,13 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
     /// Reads the store again and shows the pane's entries, searched and sorted; the selection keeps what is still there.
     func reload() {
         all = store.entries(deleted: pane == .deleted)
+        if foldCache.count > all.count + 256 { let ids = Set(all.map(\.id)); foldCache = foldCache.filter { ids.contains($0.key) } }
         let q = Array(fold(query.trimmingCharacters(in: .whitespacesAndNewlines)))
         var list = all.filter { inPane($0, pane) }
         if !q.isEmpty {
             list = list.filter { e in
-                let f = foldCache[e.id] ?? { let f = fold(e.searchable(shownTitle(e))); foldCache[e.id] = f; return f }()
+                let f = foldCache[e.id].flatMap { $0.digest == e.digest ? $0.f : nil }
+                    ?? { let f = fold(e.searchable(shownTitle(e))); foldCache[e.id] = (e.digest, f); return f }()
                 return f.withUnsafeBytes { h in q.withUnsafeBytes { nd in memmem(h.baseAddress, h.count, nd.baseAddress, nd.count) != nil } }
             }
         }
@@ -355,7 +357,10 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
     }
 
     func entry(_ id: Int64) -> Entry? { all.first { $0.id == id } }
-    var picked: [Entry] { order.compactMap(entry) }
+    var picked: [Entry] {   // one pass: entry(_:) per id is quadratic under ⌘A
+        let byId = Dictionary(all.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        return order.compactMap { byId[$0] }
+    }
 
     private func updateTitle() {
         guard let w = window else { return }
@@ -371,7 +376,9 @@ final class BrowserController: NSObject, NSWindowDelegate, NSMenuItemValidation 
         if order.isEmpty {
             s.append(NSAttributedString(string: counted(shown.count, "object|objects"), attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
         } else {
+            let picked = self.picked
             let f = Facts(picked)
+            if !f.complete { TextStats.shared.prepare(picked) { [weak self] in self?.updateStatus() } }
             s.append(NSAttributedString(string: String(format: L("%@ of %@ selected"), grouped(order.count), grouped(shown.count)),
                                         attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: .semibold), .foregroundColor: NSColor.labelColor]))
             if !f.parts.isEmpty {

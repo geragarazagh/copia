@@ -268,13 +268,18 @@ final class IconsView: NSObject, ItemsView, NSCollectionViewDataSource, NSCollec
         }
         (grid.collectionViewLayout as? NSCollectionViewFlowLayout)?.headerReferenceSize = NSSize(width: 100, height: o.sort == .date ? 34 : 0)
         grid.reloadData()
+        grid.lastClicked = nil   // a path into the old sections
     }
 
     private func path(_ id: Int64) -> IndexPath? {
         for (s, sec) in sections.enumerated() { if let i = sec.1.firstIndex(where: { $0.id == id }) { return IndexPath(item: i, section: s) } }
         return nil
     }
-    private func id(_ p: IndexPath) -> Int64 { sections[p.section].1[p.item].id }
+    /// Nil for a path the sections no longer hold: the grid's selection and its last click can outlive a reload that
+    /// shortened the list (a right-click after a clipboard storm crashed on one, stress run 2026-11-27).
+    private func id(_ p: IndexPath) -> Int64? {
+        sections.indices.contains(p.section) && sections[p.section].1.indices.contains(p.item) ? sections[p.section].1[p.item].id : nil
+    }
 
     func select(_ ids: Set<Int64>) {
         syncing = true
@@ -286,7 +291,7 @@ final class IconsView: NSObject, ItemsView, NSCollectionViewDataSource, NSCollec
     func updateBadges() {
         guard let o = owner else { return }
         for case let it as IconItem in grid.visibleItems() {
-            if let p = grid.indexPath(for: it) { it.badge(gridBadge(o.order.count > 1 ? o.order.firstIndex(of: id(p)).map { $0 + 1 } : nil)) }
+            if let p = grid.indexPath(for: it), let i = id(p) { it.badge(gridBadge(o.order.count > 1 ? o.order.firstIndex(of: i).map { $0 + 1 } : nil)) }
         }
     }
 
@@ -364,8 +369,8 @@ final class IconsView: NSObject, ItemsView, NSCollectionViewDataSource, NSCollec
 
     private func changed() {
         guard !syncing else { return }
-        let ids = Set(grid.selectionIndexPaths.map(id))
-        owner?.selectionChanged(to: ids, cursor: grid.lastClicked.map(id))
+        let ids = Set(grid.selectionIndexPaths.compactMap(id))
+        owner?.selectionChanged(to: ids, cursor: grid.lastClicked.flatMap(id))
     }
 }
 
@@ -412,6 +417,7 @@ final class KeyGrid: NSCollectionView {
     override func menu(for e: NSEvent) -> NSMenu? {
         guard let o = owner else { return nil }
         if let p = indexPathForItem(at: convert(e.locationInWindow, from: nil)) {
+            lastClicked = p
             if !selectionIndexPaths.contains(p) {
                 selectionIndexPaths = [p]
                 delegate?.collectionView?(self, didSelectItemsAt: [p])
@@ -913,8 +919,9 @@ final class GalleryView: NSObject, ItemsView, NSCollectionViewDataSource, NSColl
 
     private func changed() {
         guard !syncing, let o = owner else { return }
-        let ids = Set(strip.selectionIndexPaths.map { o.shown[$0.item].id })
-        o.selectionChanged(to: ids, cursor: strip.lastClicked.map { o.shown[$0.item].id })
+        let at = { (p: IndexPath) in o.shown.indices.contains(p.item) ? o.shown[p.item].id : nil }   // stale paths: IconsView.id
+        let ids = Set(strip.selectionIndexPaths.compactMap(at))
+        o.selectionChanged(to: ids, cursor: strip.lastClicked.flatMap(at))
         showStage()
     }
 }

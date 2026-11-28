@@ -173,6 +173,24 @@ func unit() {
     check(f.parts.count == 4 && f.parts[1] == "28\u{00A0}characters" && f.parts[2] == "5\u{00A0}words", "facts parts \(f.parts)")
     check(f.parts[3].hasPrefix("≈"), "tokens last \(f.parts)")
     check(roundTokensUp(2416) == 2450 && roundTokensUp(19941) == 20000 && roundTokensUp(7.2) == 8 && roundTokensUp(82) == 85 && roundTokensUp(415) == 420, "roundTokensUp")
+    // A large text is counted off the main thread: the line leaves the counts out until then, and has them after.
+    let bigText = String(repeating: "слово word ", count: 8_000)
+    let (bs, bids) = seeded(tmpDir("bigfacts"), [(textSnap(bigText), now)])
+    let big = bids.compactMap { id in bs.entries().first { $0.id == id } }
+    let bf0 = Facts(big)
+    check(!bf0.complete && bf0.parts.count == 1, "large text: size only until counted \(bf0.parts)")
+    var counted0 = false
+    TextStats.shared.prepare(big) { counted0 = true }
+    let until = Date().addingTimeInterval(10)
+    while !counted0 && Date() < until { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+    let bf1 = Facts(big)
+    check(bf1.complete && bf1.parts.contains(counted(16_000, "word|words")) && bf1.parts.contains(counted(88_000, "character|characters")), "large text counted \(bf1.parts)")
+    check(TextStats.count("Слушай, мне нужен пауэрбанк — для поездок; it's fine").words == 8, "TextStats words agree with wordCount")
+    // Titles and thumbnail pages are capped by bytes too: one character can carry thousands of marks.
+    let zalgo = "a" + String(repeating: "\u{0301}", count: 50_000) + " tail"
+    check(headline(zalgo).utf8.count <= 1200, "headline capped by bytes \(headline(zalgo).utf8.count)")
+    check(shortText(String(repeating: "x", count: 5_000), 900).count == 900 && shortText("short", 900) == "short", "shortText")
+    check(shortText(zalgo, 900).utf8.count <= 3600, "shortText caps a mark-laden character")
 
     // Delete and undo through the panel's controller (no window).
     let ddir = tmpDir("delete")

@@ -530,7 +530,7 @@ final class PreviewWindow: NSPanel {
         case ("a", [.command]): tv.selectAll(nil)
         case ("c", [.command]): tv.copy(nil)
         case ("x", [.command]): tv.cut(nil)
-        case ("v", [.command]): tv.paste(nil)
+        case ("v", [.command]): pasteText(into: tv)   // not AppKit's paste: the bidi trap of macOS 26 (panel.swift)
         case ("z", [.command]): tv.undoManager?.undo()
         case ("z", [.command, .shift]): tv.undoManager?.redo()
         default: return super.performKeyEquivalent(with: e)

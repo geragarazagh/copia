@@ -340,7 +340,7 @@ final class Thumbs {
             NSGraphicsContext.restoreGraphicsState()
             let p = NSMutableParagraphStyle(); p.lineBreakMode = .byWordWrapping
             let size = max(2.2, s / 30)
-            NSAttributedString(string: String(t.prefix(900)), attributes: [
+            NSAttributedString(string: shortText(t, 900), attributes: [
                 .font: NSFont.systemFont(ofSize: size), .foregroundColor: NSColor(white: 0.25, alpha: 1), .paragraphStyle: p,
             ]).draw(with: r.insetBy(dx: w * 0.1, dy: h * 0.08), options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
             return true

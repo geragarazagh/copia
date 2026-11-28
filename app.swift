@@ -57,6 +57,7 @@ final class App: NSObject, NSApplicationDelegate {
     private var lastOtherApp: String?
     private let prepQueue = DispatchQueue(label: "com.geragaraza.copia.prepare", qos: .utility)
     private var housekeeping: Timer?
+    private var reloadQueued = false   // a reload after copies is already on its way (monitor.onCopy)
 
     init(store: Store) {
         self.store = store
@@ -127,8 +128,16 @@ final class App: NSObject, NSApplicationDelegate {
                 DispatchQueue.main.async {
                     let id = self.store.add(e, items)
                     self.queue.add([id])
-                    self.panel.reload()
-                    if self.browser.isVisible { self.browser.reload() }
+                    // One reload for a run of copies: each reload reads every entry, its whole text too, so a storm of
+                    // 60 copies a second read the store 60 times a second on the main thread (stress runs 2026-11-27).
+                    // The copies of a run are already queued here, so the reload goes after the last of them.
+                    guard !self.reloadQueued else { return }
+                    self.reloadQueued = true
+                    DispatchQueue.main.async {
+                        self.reloadQueued = false
+                        self.panel.reload()
+                        if self.browser.isVisible { self.browser.reload() }
+                    }
                 }
             }
         }
